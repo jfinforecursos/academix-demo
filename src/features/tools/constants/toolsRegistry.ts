@@ -1,0 +1,187 @@
+import {
+    FileSpreadsheet,
+    Dices,
+    Shuffle,
+    Award,
+    Scale,
+    ClipboardList,
+    Trophy,
+    LucideIcon
+} from "lucide-react";
+
+export interface ToolDefinition {
+    id: string;
+    title: string;
+    shortTitle: string;
+    description: string;
+    category: "Evaluación" | "Curricular" | "Horarios" | "Analítica" | "Dinámicas" | "Pedagógica";
+    status: "available" | "coming-soon";
+    isAutonomous: boolean;
+    version: string;
+    icon: LucideIcon;
+    color: string;
+    badgeBg: string;
+    features: string[];
+    author?: string;
+    allowedRoles?: ("teacher" | "gestor" | "admin")[];
+}
+
+export const TOOLS_REGISTRY: ToolDefinition[] = [
+    {
+        id: "committee-reports",
+        title: "Comité de Evaluación",
+        shortTitle: "Comité de Evaluación",
+        description: "Gestión integral de procesos de citación y reporte de aprendices a comités de evaluación. Permite a los instructores reportar casos con evidencias obligatorias por ficha y al Gestor consolidar y auditar la totalidad de aprendices reportados.",
+        category: "Evaluación",
+        status: "available",
+        isAutonomous: false,
+        version: "v1.0",
+        icon: Scale,
+        color: "text-amber-600 dark:text-amber-400",
+        badgeBg: "bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/25",
+        features: [
+            "Creación y administración de procesos de comité por trimestre o periodo",
+            "Visualización y auditoría de la totalidad de aprendices reportados",
+            "Acceso para instructores a todas las fichas del área de formación",
+            "Campo obligatorio para enlace (URL) de evidencias documentales",
+            "Gestión, edición y retiro de reportes de aprendices en tiempo real",
+            "Exportación corporativa a Excel (.xlsx) para actas de comité"
+        ],
+        author: "AcademiX Gestión",
+        allowedRoles: ["gestor", "teacher", "admin"]
+    },
+    {
+        id: "standout-learners",
+        title: "Aprendices Destacados",
+        shortTitle: "Aprendices Destacados",
+        description: "Convocatoria y postulación de aprendices sobresalientes al Cuadro de Honor. Permite al Gestor abrir procesos de reconocimiento y a los instructores postular aprendices por excelencia académica, liderazgo, innovación y compromiso.",
+        category: "Evaluación",
+        status: "available",
+        isAutonomous: false,
+        version: "v1.0",
+        icon: Trophy,
+        color: "text-teal-600 dark:text-teal-400",
+        badgeBg: "bg-teal-500/10 text-teal-700 dark:text-teal-300 border-teal-500/25",
+        features: [
+            "Creación y gestión de convocatorias de aprendices destacados por área",
+            "Postulación por parte de instructores en todas las fichas de su área",
+            "Categorías: Excelencia Académica, Liderazgo, Innovación, Compromiso e Integral",
+            "Registro de logros, proyectos destacados y enlace opcional a portafolio",
+            "Consolidación, exaltación a Cuadro de Honor y auditoría por el Gestor",
+            "Exportación corporativa a Excel (.xlsx) y PDF oficial"
+        ],
+        author: "AcademiX Gestión",
+        allowedRoles: ["gestor", "teacher", "admin"]
+    },
+    {
+        id: "sofia-reports",
+        title: "Reporte de Juicios Evaluativos",
+        shortTitle: "Juicios Evaluativos",
+        description: "Carga archivos Excel de Sofia Plus para generar matrices visuales de juicios evaluativos, analítica interactiva de aprendices y organizador curricular de RA con exportación a Excel y PDF.",
+        category: "Evaluación",
+        status: "available",
+        isAutonomous: true,
+        version: "v1.2",
+        icon: FileSpreadsheet,
+        color: "text-emerald-600 dark:text-emerald-400",
+        badgeBg: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/25",
+        features: [
+            "Matriz dinámica de juicios (Aprobados y Por Evaluar)",
+            "Organizador interactivo de Resultados de Aprendizaje por periodo",
+            "Analítica gráfica con filtros, avance y estado por ficha",
+            "Exportación corporativa a Excel estilizado y PDF oficial",
+            "Procesamiento autónomo y 100% seguro en el navegador"
+        ],
+        author: "AcademiX Labs"
+    },
+    {
+        id: "roulette",
+        title: "Ruleta de Participación y Notas",
+        shortTitle: "Ruleta de Aprendices",
+        description: "Dinámica interactiva para seleccionar aprendices al azar de tu ficha, ideal para exposiciones, preguntas diagnósticas, participación activa y calificación directa con sonidos retro y animación física.",
+        category: "Dinámicas",
+        status: "available",
+        isAutonomous: true,
+        version: "v1.0",
+        icon: Dices,
+        color: "text-primary",
+        badgeBg: "bg-primary/10 text-primary border-primary/20",
+        features: [
+            "Selección aleatoria ponderada con animación física de ruleta",
+            "Historial en vivo de participantes seleccionados",
+            "Asignación y registro rápido de calificaciones",
+            "Exclusión temporal y reincorporación de aprendices",
+            "Exportación corporativa a Excel (.xlsx) y PDF oficial",
+            "Efectos de sonido retro y lluvia de confeti para ganadores"
+        ],
+        author: "AcademiX Instructor",
+        allowedRoles: ["teacher"]
+    },
+    {
+        id: "group-generator",
+        title: "Creador de Grupos de Trabajo",
+        shortTitle: "Organizador de Grupos",
+        description: "Distribuye y organiza automáticamente los aprendices de tu ficha en equipos colaborativos de trabajo o arrástralos manualmente mediante drag & drop con exportación a Excel y PDF.",
+        category: "Pedagógica",
+        status: "available",
+        isAutonomous: true,
+        version: "v1.0",
+        icon: Shuffle,
+        color: "text-primary",
+        badgeBg: "bg-primary/10 text-primary border-primary/20",
+        features: [
+            "Generación aleatoria balanceada por número de equipos o aprendices",
+            "Organización manual fluida con drag & drop entre columnas",
+            "Exportación corporativa a Excel multihoja y PDF institucional",
+            "Guardado e importación de proyectos en formato JSON",
+            "Nombres personalizables por cada equipo de trabajo"
+        ],
+        author: "AcademiX Instructor",
+        allowedRoles: ["teacher"]
+    },
+    {
+        id: "vocero-election",
+        title: "Elección de Vocero y Suplente",
+        shortTitle: "Elección de Vocero",
+        description: "Habilita y gestiona el proceso democrático de postulación, votación virtual en tiempo real y escrutinio transparente para elegir el Vocero Principal y Vocero Suplente de la ficha.",
+        category: "Dinámicas",
+        status: "available",
+        isAutonomous: false,
+        version: "v1.0",
+        icon: Award,
+        color: "text-amber-500 dark:text-amber-400",
+        badgeBg: "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/25",
+        features: [
+            "Habilitación controlada de postulaciones por ficha",
+            "Control de quórum mínimo (mínimo 2 postulantes requeridos)",
+            "Voto secreto, definitivo e irreversible para aprendices",
+            "Opción democrática oficial de Voto en Blanco",
+            "Escrutinio y conteo en tiempo real 100% transparente",
+            "Proclamación oficial de Vocero Principal y Suplente"
+        ],
+        author: "AcademiX Elecciones",
+        allowedRoles: ["teacher"]
+    },
+    {
+        id: "remark-templates",
+        title: "Plantillas de Observaciones",
+        shortTitle: "Banco de Observaciones",
+        description: "Gestión centralizada del banco institucional de plantillas para llamados de atención, felicitaciones, citaciones y observaciones disciplinarias/académicas utilizadas por los instructores.",
+        category: "Pedagógica",
+        status: "available",
+        isAutonomous: false,
+        version: "v1.0",
+        icon: ClipboardList,
+        color: "text-indigo-600 dark:text-indigo-400",
+        badgeBg: "bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 border-indigo-500/25",
+        features: [
+            "Creación y administración de plantillas institucionales oficiales",
+            "Clasificación por tipo: Llamados de Atención, Felicitaciones, Citaciones y Otras",
+            "Sincronización en tiempo real con el panel de todos los instructores",
+            "Estandarización pedagógica y disciplinaria institucional",
+            "Plantillas listas para usar o personalizar en cada ficha"
+        ],
+        author: "AcademiX Gestión",
+        allowedRoles: ["gestor", "admin"]
+    }
+];

@@ -1,0 +1,493 @@
+"use client";
+
+import { useState, useEffect } from "react";
+import { useSearchParams, useRouter, usePathname } from "next/navigation";
+import { MyEnrollments } from "./MyEnrollments";
+import { formatName } from "@/lib/utils";
+import { cn } from "@/lib/utils";
+import { motion } from "framer-motion";
+import { checkIfPasswordIsDocAction, changeUserPasswordAction } from "@/features/profile/actions/profileActions";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button";
+import { toast } from "sonner";
+import Link from "next/link";
+import { Card } from "@/components/ui/card";
+import { Sparkles, History, HelpCircle, GitBranch, BookOpen, CalendarClock, ClipboardList, GraduationCap, ArrowUpRight, Award } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { isScheduleCurrent } from "@/lib/dateUtils";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { getFormattedTodayDate } from "@/lib/dateUtils";
+import { StudentHelpModal } from "./StudentHelpModal";
+import { AnnouncementFeedWidget } from "@/features/announcements/components/AnnouncementFeedWidget";
+import { AnnouncementItem } from "@/features/announcements/types";
+
+export function StudentDashboard({
+    myEnrollments,
+    studentName,
+    themes = [],
+    formattedDate,
+    studentGroup = null,
+    announcements = []
+}: {
+    myEnrollments: any[],
+    studentName: string,
+    themes?: any[],
+    formattedDate?: string,
+    studentGroup?: any,
+    announcements?: AnnouncementItem[]
+}) {
+    const searchParams = useSearchParams();
+    const router = useRouter();
+    const pathname = usePathname();
+
+    const selectedCourse = searchParams.get("courseId") || "";
+    const activeTab = searchParams.get("tab") || "activities";
+    const isInsideCourse = !!selectedCourse;
+
+    const [mounted, setMounted] = useState(false);
+    const [clientDate, setClientDate] = useState<string>("");
+    
+    useEffect(() => {
+        setMounted(true);
+        setClientDate(getFormattedTodayDate());
+    }, []);
+
+    const displayDate = mounted && clientDate ? clientDate : (formattedDate || "");
+
+    // States for password change suggestion
+    const [suggestPasswordChange, setSuggestPasswordChange] = useState(false);
+    const [newPassword, setNewPassword] = useState("");
+    const [confirmPassword, setConfirmPassword] = useState("");
+    const [passwordError, setPasswordError] = useState("");
+    const [passwordSuccess, setPasswordSuccess] = useState("");
+    const [changingPassword, setChangingPassword] = useState(false);
+    const [showHelpModal, setShowHelpModal] = useState(false);
+
+    useEffect(() => {
+        const checkPassword = async () => {
+            try {
+                const isDoc = await checkIfPasswordIsDocAction();
+                if (isDoc) {
+                    setSuggestPasswordChange(true);
+                }
+            } catch (err) {
+                console.error("Error checking student password status:", err);
+            }
+        };
+        checkPassword();
+    }, []);
+
+    const handleSuggestedPasswordChange = async (e: React.FormEvent) => {
+        e.preventDefault();
+        setPasswordError("");
+        setPasswordSuccess("");
+
+        if (!newPassword || newPassword.length < 8) {
+            setPasswordError("La contraseña debe tener al menos 8 caracteres.");
+            return;
+        }
+
+        if (newPassword !== confirmPassword) {
+            setPasswordError("Las contraseñas no coinciden.");
+            return;
+        }
+
+        setChangingPassword(true);
+        try {
+            await changeUserPasswordAction({
+                newPassword,
+                skipVerification: true
+            });
+            setPasswordSuccess("Contraseña cambiada exitosamente.");
+            toast.success("Contraseña actualizada con éxito");
+            setTimeout(() => {
+                setSuggestPasswordChange(false);
+            }, 1500);
+        } catch (err: any) {
+            setPasswordError(err.message || "Error al actualizar la contraseña.");
+        } finally {
+            setChangingPassword(false);
+        }
+    };
+
+    const handleSelectCourse = (courseId: string | null) => {
+        const params = new URLSearchParams(searchParams.toString());
+        if (courseId) {
+            params.set("courseId", courseId);
+            params.set("tab", "activities"); // Default tab when entering
+        } else {
+            params.delete("courseId");
+            params.delete("tab");
+        }
+        router.push(`${pathname}?${params.toString()}`);
+    };
+
+    const handleTabChange = (tab: string) => {
+        const params = new URLSearchParams(searchParams.toString());
+        params.set("tab", tab);
+        router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+    };
+
+    return (
+        <div className={cn(
+            "flex-1 w-full min-w-0",
+            isInsideCourse ? "p-0 h-[calc(100vh-4rem)] overflow-hidden flex flex-col" : "space-y-6"
+        )}>
+            {!isInsideCourse && (
+                <motion.div
+                    initial={{ opacity: 0, y: 15 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.4 }}
+                    className="relative rounded-3xl bg-slate-100/80 dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-800/80 p-6 sm:p-8 backdrop-blur-2xl shadow-md dark:shadow-xl overflow-hidden transition-colors"
+                >
+                    <div className="absolute -top-24 -right-24 w-96 h-96 bg-primary/15 blur-[100px] rounded-full pointer-events-none" />
+
+                    <div className="relative z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                        <div className="space-y-2">
+                            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-primary/10 border border-primary/20 text-primary text-xs font-semibold">
+                                <Sparkles className="w-3.5 h-3.5" />
+                                <span>Panel de Aprendiz</span>
+                            </div>
+                            <h1 className="text-2xl sm:text-4xl font-extrabold text-slate-900 dark:text-white tracking-tight">
+                                ¡Hola,{" "}
+                                <span className="bg-gradient-to-r from-slate-900 via-slate-700 to-primary dark:from-white dark:via-slate-200 dark:to-primary bg-clip-text text-transparent">
+                                    {studentName ? formatName(studentName) : 'Aprendiz'}
+                                </span>
+                                !
+                            </h1>
+                            <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 capitalize flex items-center gap-2 font-medium">
+                                <span className="w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
+                                <span>{displayDate}</span>
+                                <span className="text-slate-400 dark:text-slate-600">•</span>
+                                <span>Resumen de tu actividad académica en AcademiX</span>
+                            </p>
+
+                            {/* Active Ficha / Group Metadata with Timeline */}
+                            {studentGroup && (() => {
+                                const activeSlot = studentGroup?.scheduleSlots?.find((slot: any) =>
+                                    slot.academicSchedule && (
+                                        isScheduleCurrent(slot.academicSchedule.startDate, slot.academicSchedule.endDate) ||
+                                        slot.academicSchedule.isActive
+                                    ) && slot.period?.timeline?.name
+                                ) || studentGroup?.scheduleSlots?.find((slot: any) => slot.period?.timeline?.name);
+
+                                const timelineName =
+                                    activeSlot?.period?.timeline?.name ||
+                                    studentGroup?.scheduleSlots?.find((s: any) => s.period)?.period?.timeline?.name ||
+                                    studentGroup?.program?.timelines?.find((t: any) => t.isDefault)?.name ||
+                                    studentGroup?.program?.timelines?.[0]?.name ||
+                                    null;
+
+                                const periodName =
+                                    activeSlot?.period?.name ||
+                                    studentGroup?.scheduleSlots?.find((s: any) => s.period)?.period?.name ||
+                                    (studentGroup as any)?.period?.name ||
+                                    null;
+
+                                return (
+                                    <div className="flex flex-wrap items-center gap-2 pt-1.5">
+                                        <Badge variant="secondary" className="text-xs font-black py-1 px-3 bg-primary/10 text-primary border border-primary/20 rounded-xl shrink-0">
+                                            Ficha {studentGroup.name}
+                                        </Badge>
+                                        {periodName && (
+                                            <Badge variant="secondary" className="text-xs font-bold py-1 px-2.5 bg-primary/10 text-primary border border-primary/20 rounded-xl shrink-0 shadow-2xs">
+                                                {periodName}
+                                            </Badge>
+                                        )}
+                                        {timelineName && (
+                                            <Badge variant="outline" className="text-xs font-semibold py-1 px-2.5 bg-primary/10 text-primary border-primary/20 rounded-xl flex items-center gap-1.5 shrink-0 shadow-2xs">
+                                                <GitBranch className="w-3.5 h-3.5 text-primary shrink-0" />
+                                                {timelineName}
+                                            </Badge>
+                                        )}
+                                    </div>
+                                );
+                            })()}
+                        </div>
+                    </div>
+                </motion.div>
+            )}
+
+            {/* Overview / Quick Access Cards */}
+            {!isInsideCourse && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+                    {/* Card 1: Ficha */}
+                    <Card className="rounded-2xl border border-border/80 shadow-2xs bg-card p-4 flex flex-col justify-between hover:border-primary/40 transition-all">
+                        <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
+                                Ficha de Formación
+                            </span>
+                            <div className="p-2 rounded-xl bg-blue-500/10 text-blue-500">
+                                <GraduationCap className="h-4 w-4" />
+                            </div>
+                        </div>
+                        <div className="mt-2 space-y-0.5">
+                            <div className="text-xl font-black text-foreground truncate">
+                                {studentGroup ? `Ficha ${studentGroup.name}` : "Sin Ficha"}
+                            </div>
+                            <p className="text-[11px] text-muted-foreground truncate font-medium">
+                                {studentGroup?.program?.name || "Programa Académico"}
+                            </p>
+                        </div>
+                    </Card>
+
+                    {/* Card 2: Materias */}
+                    <Card className="rounded-2xl border border-border/80 shadow-2xs bg-card p-4 flex flex-col justify-between hover:border-primary/40 transition-all">
+                        <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
+                                Materias Activas
+                            </span>
+                            <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-500">
+                                <BookOpen className="h-4 w-4" />
+                            </div>
+                        </div>
+                        <div className="mt-2 space-y-0.5">
+                            <div className="text-xl font-black text-foreground">
+                                {myEnrollments.length} {myEnrollments.length === 1 ? "Materia" : "Materias"}
+                            </div>
+                            <p className="text-[11px] text-muted-foreground truncate font-medium">
+                                En formación lectiva vigente
+                            </p>
+                        </div>
+                    </Card>
+
+                    {/* Card 3: Horario Semanal */}
+                    <Link href="/dashboard/student/schedule" className="block group">
+                        <Card className="h-full rounded-2xl border border-border/80 shadow-2xs bg-card p-4 flex flex-col justify-between hover:border-teal-500/40 hover:shadow-xs transition-all cursor-pointer">
+                            <div className="flex items-center justify-between">
+                                <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
+                                    Horario Semanal
+                                </span>
+                                <div className="p-2 rounded-xl bg-teal-500/10 text-teal-500 group-hover:scale-105 transition-transform">
+                                    <CalendarClock className="h-4 w-4" />
+                                </div>
+                            </div>
+                            <div className="mt-2 space-y-0.5">
+                                <div className="text-xl font-black text-foreground flex items-center justify-between">
+                                    <span>Mi Horario</span>
+                                    <ArrowUpRight className="w-4 h-4 text-teal-500 opacity-0 group-hover:opacity-100 transition-opacity" />
+                                </div>
+                                <p className="text-[11px] text-teal-600 dark:text-teal-400 font-bold truncate">
+                                    Ver clases y ambientes →
+                                </p>
+                            </div>
+                        </Card>
+                    </Link>
+
+                    {/* Card 4: Registro & Asistencia */}
+                    <Link href="/dashboard/student/records" className="block group">
+                        <Card className="h-full rounded-2xl border border-border/80 shadow-2xs bg-card p-4 flex flex-col justify-between hover:border-purple-500/40 hover:shadow-xs transition-all cursor-pointer">
+                            <div className="flex items-center justify-between">
+                                <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
+                                    Historial Académico
+                                </span>
+                                <div className="p-2 rounded-xl bg-purple-500/10 text-purple-500 group-hover:scale-105 transition-transform">
+                                    <ClipboardList className="h-4 w-4" />
+                                </div>
+                            </div>
+                            <div className="mt-2 space-y-0.5">
+                                <div className="text-xl font-black text-foreground flex items-center justify-between">
+                                    <span>Asistencia y Notas</span>
+                                    <ArrowUpRight className="w-4 h-4 text-purple-500 opacity-0 group-hover:opacity-100 transition-opacity" />
+                                </div>
+                                <p className="text-[11px] text-purple-600 dark:text-purple-400 font-bold truncate">
+                                    Historial y boletines →
+                                </p>
+                            </div>
+                        </Card>
+                    </Link>
+
+                    {/* Card 5: Elección de Vocero */}
+                    <Link href="/dashboard/student/elections" className="block group">
+                        <Card className="h-full rounded-2xl border border-border/80 shadow-2xs bg-card p-4 flex flex-col justify-between hover:border-amber-500/40 hover:shadow-xs transition-all cursor-pointer">
+                            <div className="flex items-center justify-between">
+                                <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
+                                    Vocería de Ficha
+                                </span>
+                                <div className="p-2 rounded-xl bg-amber-500/10 text-amber-500 group-hover:scale-105 transition-transform">
+                                    <Award className="h-4 w-4" />
+                                </div>
+                            </div>
+                            <div className="mt-2 space-y-0.5">
+                                <div className="text-xl font-black text-foreground flex items-center justify-between">
+                                    <span>Elecciones</span>
+                                    <ArrowUpRight className="w-4 h-4 text-amber-500 opacity-0 group-hover:opacity-100 transition-opacity" />
+                                </div>
+                                <p className="text-[11px] text-amber-600 dark:text-amber-400 font-bold truncate">
+                                    Votar y postularme →
+                                </p>
+                            </div>
+                        </Card>
+                    </Link>
+                </div>
+            )}
+
+            {!isInsideCourse && (
+                <div className="pt-2">
+                    <AnnouncementFeedWidget announcements={announcements} />
+                </div>
+            )}
+
+            {/* Content area */}
+            <div className={cn(isInsideCourse ? "h-full" : "space-y-4 pt-2")}>
+                {isInsideCourse && (
+                    <style jsx global>{`
+                        /* Hide the global App Header when inside a course to allow course-specific unified header */
+                        main[data-slot="sidebar-inset"] > header {
+                            display: none !important;
+                        }
+
+                        /* Remove all margins, radius and force full height on the main inset */
+                        main[data-slot="sidebar-inset"] {
+                            margin: 0 !important;
+                            border-radius: 0 !important;
+                            height: 100vh !important;
+                            overflow: hidden !important;
+                            display: flex !important;
+                            flex-direction: column !important;
+                        }
+
+                        /* Force the child container to be flush and fill the ENTIRE height since we hid the header */
+                        main[data-slot="sidebar-inset"] > div {
+                            padding: 0 !important;
+                            margin: 0 !important;
+                            height: 100vh !important;
+                            max-height: 100vh !important;
+                            flex: 1 !important;
+                            display: flex !important;
+                            flex-direction: column !important;
+                            overflow: hidden !important;
+                        }
+
+                        /* Hide any potential footers and lock global scroll */
+                        footer, .footer {
+                            display: none !important;
+                        }
+                        /* Ocultar scrollbar global de windows si persiste */
+                        body, html {
+                            overflow: hidden !important;
+                            height: 100vh !important;
+                        }
+                    `}</style>
+                )}
+                {isInsideCourse ? (
+                    <MyEnrollments
+                        enrollments={myEnrollments}
+                        selectedCourse={selectedCourse}
+                        onSelectCourse={handleSelectCourse}
+                        themes={themes}
+                    />
+                ) : (
+                    <div className="space-y-4">
+                        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 pb-1">
+                            <div>
+                                <h2 className="text-xl sm:text-2xl font-black tracking-tight text-foreground flex items-center gap-2.5">
+                                    <BookOpen className="w-5 h-5 text-primary" />
+                                    <span>Mis Materias</span>
+                                </h2>
+                                <p className="text-xs text-muted-foreground font-medium">
+                                    Materias y competencias asignadas a tu ficha según la programación horaria vigente
+                                </p>
+                            </div>
+                            <Badge variant="outline" className="text-xs font-bold text-muted-foreground bg-muted/40 border-border/80 px-3 py-1 rounded-full">
+                                {myEnrollments.length} {myEnrollments.length === 1 ? "materia asignada" : "materias asignadas"}
+                            </Badge>
+                        </div>
+
+                        <motion.div
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ duration: 0.3 }}
+                        >
+                            <MyEnrollments 
+                                enrollments={myEnrollments} 
+                                selectedCourse={selectedCourse} 
+                                onSelectCourse={handleSelectCourse}
+                                activeTab={activeTab}
+                                onTabChange={handleTabChange}
+                                themes={themes}
+                            />
+                        </motion.div>
+                    </div>
+                )}
+            </div>
+
+            {/* ============ DIALOG: SUGGEST PASSWORD CHANGE ============ */}
+            <Dialog open={suggestPasswordChange} onOpenChange={setSuggestPasswordChange}>
+                <DialogContent
+                    onPointerDownOutside={(e) => e.preventDefault()}
+                    onInteractOutside={(e) => e.preventDefault()}
+                >
+                    <DialogHeader>
+                        <DialogTitle className="text-xl font-bold text--600 dark:text--400 dark:text-yellow-500">
+                            🛡️ Seguridad de la cuenta
+                        </DialogTitle>
+                        <DialogDescription className="mt-2 text-foreground">
+                            Detectamos que estás usando tu <strong>número de documento</strong> como contraseña.
+                            Por motivos de seguridad y para proteger tu información personal, te sugerimos actualizarla ahora.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <form onSubmit={handleSuggestedPasswordChange} className="space-y-4 mt-2">
+                        <div className="space-y-2">
+                            <Label htmlFor="s-new-password">Nueva Contraseña</Label>
+                            <Input
+                                id="s-new-password"
+                                type="password"
+                                placeholder="Mínimo 8 caracteres"
+                                value={newPassword}
+                                onChange={(e) => setNewPassword(e.target.value)}
+                                required
+                                disabled={changingPassword}
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <Label htmlFor="s-confirm-password">Confirmar Nueva Contraseña</Label>
+                            <Input
+                                id="s-confirm-password"
+                                type="password"
+                                placeholder="Repite la nueva contraseña"
+                                value={confirmPassword}
+                                onChange={(e) => setConfirmPassword(e.target.value)}
+                                required
+                                disabled={changingPassword}
+                            />
+                        </div>
+
+                        {passwordError && (
+                            <div className="text-sm font-medium text-destructive">{passwordError}</div>
+                        )}
+                        {passwordSuccess && (
+                            <div className="text-sm font-medium text--600 dark:text--400 dark:text-green-500">{passwordSuccess}</div>
+                        )}
+
+                        <DialogFooter className="gap-2 sm:gap-0">
+                            <Button 
+                                type="button" 
+                                variant="ghost" 
+                                onClick={() => setSuggestPasswordChange(false)} 
+                                disabled={changingPassword}
+                            >
+                                Omitir por ahora
+                            </Button>
+                            <Button 
+                                type="submit" 
+                                disabled={changingPassword || !newPassword || !confirmPassword}
+                            >
+                                {changingPassword ? "Guardando..." : "Actualizar Contraseña"}
+                            </Button>
+                        </DialogFooter>
+                    </form>
+                </DialogContent>
+            </Dialog>
+
+            {/* Modal de Ayuda del Portal de Aprendiz */}
+            <StudentHelpModal
+                open={showHelpModal}
+                onOpenChange={setShowHelpModal}
+                initialTab="overview"
+            />
+        </div>
+    );
+}

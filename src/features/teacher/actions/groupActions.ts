@@ -1,0 +1,1075 @@
+"use server";
+
+import prisma from "@/lib/prisma";
+import { AttendanceStatus, RemarkType } from "@/generated/prisma/client";
+import { revalidatePath } from "next/cache";
+import { auth } from "@/lib/auth";
+import { headers } from "next/headers";
+import crypto from "crypto";
+import { isDateInColombianWeek, parseDateStringToUTCMidday, isScheduleCurrent, toCalendarYMD } from "@/lib/dateUtils";
+import { calculateStudentAttendanceLoss } from "@/lib/gradePenaltyUtils";
+import { resolveCurrentAcademicSchedule } from "@/lib/academicScheduleResolver";
+import { interpolateRemarkTemplate } from "../utils/remarkTemplateVariables";
+
+async function getSession() {
+    return await auth.api.getSession({ headers: await headers() });
+}
+
+function isDateInCurrentWeek(date: Date | string): boolean {
+    return isDateInColombianWeek(date);
+}
+
+async function checkIsCourseWeekLocked(_courseId: string, _dateObj: Date): Promise<boolean> {
+    // Ya no existen restricciones de bloqueo para fechas pasadas;
+    // todos los instructores pueden diligenciar inasistencias pasadas libremente.
+    return false;
+}
+
+async function requireTeacher() {
+    const session = await getSession();
+    if (!session || (session.user.role !== "teacher" && session.user.role !== "admin" && session.user.role !== "gestor")) {
+        throw new Error("Unauthorized: Teacher access required");
+    }
+    return session.user;
+}
+
+async function requireTeacherOrObserver() {
+    const session = await getSession();
+    if (!session || (session.user.role !== "teacher" && session.user.role !== "admin" && session.user.role !== "gestor" && session.user.role !== "observer")) {
+        throw new Error("Unauthorized: Teacher or Observer access required");
+    }
+    return session.user;
+}
+
+async function verifyCourseTeacher(courseId: string, teacherId: string) {
+    const session = await getSession();
+    if (session?.user?.role === "admin" || session?.user?.role === "gestor") {
+        return;
+    }
+
+    const course = await prisma.course.findUnique({
+        where: { id: courseId },
+        select: {
+            teacherId: true,
+            schedules: { select: { teacherId: true } },
+            group: {
+                select: {
+                    teachers: { select: { id: true } }
+                }
+            }
+        }
+    });
+
+    if (!course) {
+        throw new Error("Unauthorized: Curso no encontrado");
+    }
+
+    const isAssigned = 
+        course.teacherId === teacherId ||
+        course.schedules.some(s => s.teacherId === teacherId) ||
+        course.group?.teachers.some(t => t.id === teacherId);
+
+    if (!isAssigned) {
+        throw new Error("Unauthorized: You do not have permission to modify this course");
+    }
+}
+
+export async function resetStudentPassword(studentId: string) {
+    try {
+        const caller = await requireTeacher();
+
+        const student = await prisma.user.findUnique({
+            where: { id: studentId },
+            include: { profile: true }
+        });
+
+        if (!student) throw new Error("Estudiante no encontrado");
+
+        // Validación estricta: Solo se permite restablecer contraseñas a usuarios con rol estudiante
+        if (student.role !== "student") {
+            throw new Error("No autorizado: Solo se puede restablecer la contraseña de usuarios con rol de estudiante");
+        }
+
+        // Si el solicitante es un docente, validar que el estudiante pertenezca a sus cursos o grupos
+        if (caller.role === "teacher") {
+            const teachesStudentCourse = await prisma.course.findFirst({
+                where: {
+                    teacherId: caller.id,
+                    enrollments: {
+                        some: { userId: studentId }
+                    }
+                }
+            });
+
+            const teachesStudentGroup = await prisma.group.findFirst({
+                where: {
+                    OR: [
+                        ...(student.groupId ? [{ id: student.groupId }] : []),
+                        { students: { some: { id: studentId } } },
+                        { groupEnrollments: { some: { studentId: studentId } } }
+                    ],
+                    AND: {
+                        OR: [
+                            { teachers: { some: { id: caller.id } } },
+                            { courses: { some: { teacherId: caller.id } } },
+                            { courses: { some: { schedules: { some: { teacherId: caller.id } } } } }
+                        ]
+                    }
+                }
+            });
+
+            if (!teachesStudentCourse && !teachesStudentGroup) {
+                throw new Error("No autorizado: Solo puedes restablecer la contraseña de estudiantes asignados a tus materias o grupos");
+            }
+        }
+
+        const defaultPassword = student.profile?.identificacion?.trim();
+
+        if (!defaultPassword) {
+            throw new Error("El estudiante no tiene número de identificación registrado en su perfil.");
+        }
+
+        // Hash the password (same logic as student creation / teacher password recovery)
+        const { hashPassword } = await import("better-auth/crypto");
+        const hashedPassword = await hashPassword(defaultPassword);
+
+        // Find and update the Account record or create it if not present
+        const existingAccount = await prisma.account.findFirst({
+            where: { userId: studentId, providerId: "credential" }
+        });
+
+        if (existingAccount) {
+            await prisma.account.update({
+                where: { id: existingAccount.id },
+                data: { password: hashedPassword }
+            });
+        } else {
+            await prisma.account.create({
+                data: {
+                    id: crypto.randomUUID(),
+                    accountId: crypto.randomUUID(),
+                    providerId: "credential",
+                    userId: studentId,
+                    password: hashedPassword
+                }
+            });
+        }
+        return { success: true };
+    } catch (error: any) {
+        console.error("Error resetting password:", error);
+        return { success: false, error: error.message };
+    }
+}
+
+export async function saveAttendanceBatch(
+    courseId: string, 
+    date: string, 
+    records: { studentId: string; status: AttendanceStatus; arrivalTime?: string; departureTime?: string; justification?: string }[]
+) {
+    try {
+        const teacher = await requireTeacher();
+        await verifyCourseTeacher(courseId, teacher.id);
+
+        const dateObj = parseDateStringToUTCMidday(date);
+
+        // Check week locking config per program
+        const isLocked = await checkIsCourseWeekLocked(courseId, dateObj);
+        if (isLocked) {
+            const approvedRequest = await prisma.attendancePermissionRequest.findFirst({
+                where: {
+                    courseId,
+                    teacherId: teacher.id,
+                    date: dateObj,
+                    status: "APPROVED"
+                }
+            });
+            if (!approvedRequest) {
+                throw new Error("WEEK_LOCKED");
+            }
+        }
+
+        // Delete existing attendance for this course and date
+        await prisma.attendance.deleteMany({
+            where: {
+                courseId,
+                date: dateObj
+            }
+        });
+
+        const parseArrivalTime = (timeStr: string | undefined | null) => {
+            if (!timeStr) return null;
+            if (/^\d{2}:\d{2}$/.test(timeStr)) {
+                const yyyy = dateObj.getUTCFullYear();
+                const mm = String(dateObj.getUTCMonth() + 1).padStart(2, "0");
+                const dd = String(dateObj.getUTCDate()).padStart(2, "0");
+                const fullDateTimeStr = `${yyyy}-${mm}-${dd}T${timeStr}:00.000Z`;
+                const d = new Date(fullDateTimeStr);
+                if (!isNaN(d.getTime())) {
+                    return d;
+                }
+            }
+            const dateParsed = new Date(timeStr);
+            if (!isNaN(dateParsed.getTime())) {
+                return dateParsed;
+            }
+            return null;
+        };
+
+        const validRecords = records.filter(r => r.status && (r.status as string) !== "UNMARKED");
+        if (validRecords.length > 0) {
+            await prisma.attendance.createMany({
+                data: validRecords.map(r => ({
+                    courseId,
+                    userId: r.studentId,
+                    date: dateObj,
+                    status: r.status,
+                    arrivalTime: parseArrivalTime(r.arrivalTime),
+                    departureTime: parseArrivalTime(r.departureTime),
+                    justification: r.justification
+                }))
+            });
+        }
+
+        return { success: true };
+    } catch (error: any) {
+        console.error("Error saving attendance:", error);
+        return { success: false, error: error.message };
+    }
+}
+
+export async function saveRemarkBatch(
+    teacherId: string,
+    courseId: string, 
+    studentIds: string[], 
+    type: RemarkType, 
+    title: string, 
+    description: string,
+    customValues?: Record<string, string>
+) {
+    try {
+        const teacher = await requireTeacher();
+        if (teacher.id !== teacherId) throw new Error("Unauthorized");
+        await verifyCourseTeacher(courseId, teacher.id);
+
+        if (studentIds.length === 0) throw new Error("No students selected");
+
+        // Fetch students and course/group details for variable interpolation
+        const [students, course] = await Promise.all([
+            prisma.user.findMany({
+                where: { id: { in: studentIds } },
+                include: { profile: true }
+            }),
+            prisma.course.findUnique({
+                where: { id: courseId },
+                include: {
+                    group: {
+                        include: {
+                            program: true
+                        }
+                    }
+                }
+            })
+        ]);
+
+        const studentMap = new Map(students.map(s => [s.id, s]));
+
+        const finalData = studentIds.map(studentId => {
+            const student = studentMap.get(studentId);
+            const personalizedTitle = interpolateRemarkTemplate(title, {
+                student,
+                group: course?.group,
+                teacherName: teacher.name,
+                currentDate: new Date(),
+                customValues
+            });
+            const personalizedDescription = interpolateRemarkTemplate(description, {
+                student,
+                group: course?.group,
+                teacherName: teacher.name,
+                currentDate: new Date(),
+                customValues
+            });
+
+            return {
+                userId: studentId,
+                teacherId,
+                courseId,
+                type,
+                title: personalizedTitle || title,
+                description: personalizedDescription || description,
+                date: new Date()
+            };
+        });
+
+        await prisma.remark.createMany({
+            data: finalData
+        });
+
+        revalidatePath("/dashboard/teacher");
+        return { success: true };
+    } catch (error: any) {
+        console.error("Error saving remarks:", error);
+        return { success: false, error: error.message };
+    }
+}
+
+
+export async function getGroupAttendanceHistory(groupId: string) {
+    try {
+        const user = await requireTeacherOrObserver();
+        const isPrivileged = user.role === "admin" || user.role === "gestor" || user.role === "observer";
+
+        // Query course IDs directly without fetching the entire group object
+        const courses = await prisma.course.findMany({
+            where: {
+                groupId,
+                ...(isPrivileged ? {} : {
+                    OR: [
+                        { teacherId: user.id },
+                        { schedules: { some: { teacherId: user.id } } },
+                        {
+                            AND: [
+                                { teacherId: null },
+                                { group: { teachers: { some: { id: user.id } } } }
+                            ]
+                        }
+                    ]
+                })
+            },
+            select: { id: true }
+        });
+
+        if (courses.length === 0) return [];
+        const courseIds = courses.map(c => c.id);
+
+        const attendances = await prisma.attendance.findMany({
+            where: {
+                courseId: { in: courseIds }
+            },
+            select: {
+                id: true,
+                date: true,
+                status: true,
+                arrivalTime: true,
+                departureTime: true,
+                justification: true,
+                justificationUrl: true,
+                courseId: true,
+                userId: true,
+                course: {
+                    select: {
+                        id: true,
+                        title: true,
+                        academicSchedule: {
+                            select: {
+                                id: true,
+                                name: true,
+                                startDate: true,
+                                endDate: true
+                            }
+                        }
+                    }
+                },
+                user: {
+                    select: {
+                        id: true,
+                        name: true,
+                        profile: {
+                            select: {
+                                identificacion: true,
+                                nombres: true,
+                                apellido: true
+                            }
+                        }
+                    }
+                }
+            },
+            orderBy: {
+                date: 'desc'
+            }
+        });
+
+        return attendances;
+    } catch (error) {
+        console.error("Error fetching attendance history:", error);
+        return [];
+    }
+}
+
+export async function getGroupRemarksHistory(groupId: string) {
+    try {
+        const user = await requireTeacherOrObserver();
+        const isPrivileged = user.role === "admin" || user.role === "gestor" || user.role === "observer";
+
+        // Query course IDs directly without fetching the entire group object
+        const courses = await prisma.course.findMany({
+            where: {
+                groupId,
+                ...(isPrivileged ? {} : {
+                    OR: [
+                        { teacherId: user.id },
+                        { schedules: { some: { teacherId: user.id } } },
+                        {
+                            AND: [
+                                { teacherId: null },
+                                { group: { teachers: { some: { id: user.id } } } }
+                            ]
+                        }
+                    ]
+                })
+            },
+            select: { id: true }
+        });
+
+        if (courses.length === 0) return [];
+        const courseIds = courses.map(c => c.id);
+
+        const remarks = await prisma.remark.findMany({
+            where: {
+                courseId: { in: courseIds }
+            },
+            include: {
+                course: true,
+                user: {
+                    include: {
+                        profile: true
+                    }
+                },
+                teacher: {
+                    select: {
+                        name: true
+                    }
+                }
+            },
+            orderBy: {
+                date: 'desc'
+            }
+        });
+
+        return remarks;
+    } catch (error) {
+        console.error("Error fetching remarks history:", error);
+        return [];
+    }
+}
+
+export async function getTeacherComprehensiveGroupAnalyticsAction(groupId: string) {
+    const user = await requireTeacherOrObserver();
+
+    const isPrivileged = user.role === "admin" || user.role === "gestor" || user.role === "observer";
+
+    const group = await prisma.group.findUnique({
+        where: { id: groupId },
+        include: {
+            program: true,
+            environment: true,
+            teachers: { select: { id: true } },
+            scheduleSlots: {
+                include: {
+                    period: true,
+                    academicSchedule: true
+                }
+            },
+            students: {
+                where: isPrivileged ? {} : { banned: { not: true } },
+                select: { id: true, name: true, banned: true, profile: { select: { identificacion: true, novedad: true, novedadColor: true } } }
+            },
+            courses: {
+                select: {
+                    id: true,
+                    title: true,
+                    teacherId: true,
+                    teacher: { select: { name: true } },
+                    schedules: true,
+                    academicSchedule: true,
+                    activities: {
+                        select: {
+                            grades: {
+                                select: { score: true, userId: true }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    if (!group) throw new Error("Grupo no encontrado");
+
+    // Resolver horario académico vigente actual para enmarcar la analítica
+    const currentSchedule = await resolveCurrentAcademicSchedule({
+        groupId: group.id,
+        programId: group.programId,
+        groupSlots: group.scheduleSlots,
+        courseSchedules: group.courses
+    });
+
+    // Filter courses: teachers only see their own courses, admins/gestores/observers see all
+    const coursesTaught = isPrivileged
+        ? group.courses
+        : group.courses.filter(c => 
+            c.teacherId === user.id ||
+            c.schedules?.some((s: any) => s.teacherId === user.id) ||
+            (!c.teacherId && group.teachers?.some((t: any) => t.id === user.id))
+        );
+
+    const courseIds = coursesTaught.map(c => c.id);
+
+    // Fetch attendances restringidas estrictamente al horario académico actual
+    const attendances = await prisma.attendance.findMany({
+        where: {
+            courseId: { in: courseIds },
+            ...(currentSchedule.startDateUTC && currentSchedule.endDateUTC ? {
+                date: {
+                    gte: currentSchedule.startDateUTC,
+                    lte: currentSchedule.endDateUTC
+                }
+            } : {})
+        },
+        select: { status: true, date: true, userId: true, courseId: true, arrivalTime: true, departureTime: true }
+    });
+
+    // Fetch remarks restringidas estrictamente al horario académico actual
+    const remarks = await prisma.remark.findMany({
+        where: {
+            courseId: { in: courseIds },
+            ...(currentSchedule.startDateUTC && currentSchedule.endDateUTC ? {
+                date: {
+                    gte: currentSchedule.startDateUTC,
+                    lte: currentSchedule.endDateUTC
+                }
+            } : {})
+        },
+        select: {
+            id: true,
+            type: true,
+            title: true,
+            description: true,
+            date: true,
+            userId: true,
+            courseId: true,
+            course: { select: { title: true } },
+            user: { select: { name: true, profile: { select: { nombres: true, apellido: true } } } },
+            teacher: { select: { name: true, profile: { select: { nombres: true, apellido: true } } } }
+        }
+    });
+
+    const uniqueDates = new Set([
+        ...attendances.map(a => new Date(a.date).toISOString().split('T')[0]),
+        ...remarks.map(r => new Date(r.date).toISOString().split('T')[0])
+    ]);
+    const totalCourseClasses = uniqueDates.size;
+
+    // Filter students: teachers do not see banned students, admins/gestores/observers see all
+    const studentsToProcess = isPrivileged
+        ? group.students
+        : group.students.filter(s => !s.banned);
+
+    // Calculate students stats
+    const totalStudents = studentsToProcess.length;
+    const bannedStudents = group.students.filter(s => s.banned).length;
+    const activeStudents = isPrivileged ? totalStudents - bannedStudents : totalStudents;
+
+    // Calculate courses average grades
+    const coursesStats = coursesTaught.map(course => {
+        const allGrades = course.activities.flatMap(a => a.grades);
+        const sum = allGrades.reduce((acc, g) => acc + g.score, 0);
+        const avg = allGrades.length > 0 ? sum / allGrades.length : 0;
+        return {
+            title: course.title,
+            averageGrade: Number(avg.toFixed(2)),
+            totalGrades: allGrades.length
+        };
+    });
+
+    // Calculate individual student metrics
+    const studentMetrics = studentsToProcess.map(student => {
+        const sAttendances = attendances.filter(a => a.userId === student.id);
+        const absent = sAttendances.filter(a => a.status === 'ABSENT').length;
+        const late = sAttendances.filter(a => a.status === 'LATE').length;
+        const present = Math.max(0, totalCourseClasses - absent - late);
+
+        const sRemarks = remarks.filter(r => r.userId === student.id);
+        const attention = sRemarks.filter(r => r.type === 'ATTENTION').length;
+        const commendation = sRemarks.filter(r => r.type === 'COMMENDATION').length;
+
+        let totalScore = 0;
+        let gradesCount = 0;
+        const courseGrades: Record<string, number> = {};
+
+        const courseAttendances: Record<string, { present: number, absent: number, late: number, leaveEarly: number, absentHours: number, lateHours: number, leaveEarlyHours: number, totalClasses: number }> = {};
+        const courseRemarks: Record<string, { attention: number, commendation: number }> = {};
+
+        let globalAbsentCount = 0;
+        let globalLateCount = 0;
+        let globalLeaveCount = 0;
+        let globalAbsentHours = 0;
+        let globalLateHours = 0;
+        let globalLeaveHours = 0;
+
+        coursesTaught.forEach(c => {
+            // Grades
+            let cScore = 0;
+            let cCount = 0;
+            c.activities.forEach(a => {
+                a.grades.filter(g => g.userId === student.id).forEach(g => {
+                    cScore += g.score;
+                    cCount++;
+                    totalScore += g.score;
+                    gradesCount++;
+                });
+            });
+            courseGrades[c.id] = cCount > 0 ? Number((cScore / cCount).toFixed(2)) : 0;
+
+            // Attendances using accurate loss calculator framed by current schedule
+            const loss = calculateStudentAttendanceLoss(
+                student.id,
+                c.id,
+                attendances as any,
+                c as any,
+                group as any,
+                { startDate: currentSchedule.startDate, endDate: currentSchedule.endDate }
+            );
+            const cDates = new Set(attendances.filter(a => a.courseId === c.id).map(a => new Date(a.date).toISOString().split('T')[0]));
+            const cPresent = Math.max(0, cDates.size - loss.absentCount - loss.lateCount - loss.leaveCount);
+            
+            courseAttendances[c.id] = {
+                present: cPresent,
+                absent: loss.absentCount,
+                late: loss.lateCount,
+                leaveEarly: loss.leaveCount,
+                absentHours: loss.absentHours,
+                lateHours: loss.lateHours,
+                leaveEarlyHours: loss.leaveHours,
+                totalClasses: cDates.size
+            };
+
+            globalAbsentCount += loss.absentCount;
+            globalLateCount += loss.lateCount;
+            globalLeaveCount += loss.leaveCount;
+            globalAbsentHours += loss.absentHours;
+            globalLateHours += loss.lateHours;
+            globalLeaveHours += loss.leaveHours;
+
+            // Remarks
+            const cRems = remarks.filter(r => r.userId === student.id && r.courseId === c.id);
+            const cAtten = cRems.filter(r => r.type === 'ATTENTION').length;
+            const cComm = cRems.filter(r => r.type === 'COMMENDATION').length;
+            courseRemarks[c.id] = { attention: cAtten, commendation: cComm };
+        });
+
+        const gradesAvg = gradesCount > 0 ? Number((totalScore / gradesCount).toFixed(2)) : 0;
+
+        return {
+            id: student.id,
+            name: student.name,
+            identificacion: student.profile?.identificacion || 'N/A',
+            banned: student.banned,
+            gradesAvg,
+            courseGrades,
+            courseAttendances,
+            courseRemarks,
+            attendances: {
+                present: Math.max(0, totalCourseClasses - globalAbsentCount - globalLateCount - globalLeaveCount),
+                absent: globalAbsentCount,
+                late: globalLateCount,
+                leaveEarly: globalLeaveCount,
+                absentHours: globalAbsentHours,
+                lateHours: globalLateHours,
+                leaveEarlyHours: globalLeaveHours
+            },
+            remarks: { attention, commendation }
+        };
+    }).sort((a, b) => a.name.localeCompare(b.name, 'es', { sensitivity: 'base' }));
+
+    const firstSlot = group.scheduleSlots?.[0];
+
+    const coursesList = coursesTaught.map(c => {
+        const courseSched = (c.academicSchedule?.startDate && isScheduleCurrent(c.academicSchedule.startDate, c.academicSchedule.endDate))
+            ? c.academicSchedule
+            : currentSchedule.schedule;
+        return {
+            id: c.id,
+            title: c.title,
+            teacherName: c.teacher?.name || "No asignado",
+            schedules: c.schedules?.map((s: any) => ({ dayOfWeek: s.dayOfWeek, startTime: s.startTime, endTime: s.endTime })),
+            startDate: courseSched?.startDate ? new Date(courseSched.startDate).toISOString() : (currentSchedule.startDateISO || null),
+            endDate: courseSched?.endDate ? new Date(courseSched.endDate).toISOString() : (currentSchedule.endDateISO || null)
+        };
+    });
+
+    return {
+        groupId: group.id,
+        studentMetrics,
+        coursesList,
+        groupName: group.name,
+        groupDescription: group.description,
+        program: group.program?.name,
+        period: currentSchedule.schedule?.name || firstSlot?.period?.name || null,
+        environment: group.environment?.name,
+        startTime: firstSlot?.startTime || null,
+        endTime: firstSlot?.endTime || null,
+        startDate: currentSchedule.startDateISO || (group.startDate ? new Date(group.startDate).toISOString() : null),
+        endDate: currentSchedule.endDateISO || (group.endDate ? new Date(group.endDate).toISOString() : null),
+        students: {
+            total: totalStudents,
+            active: activeStudents,
+            banned: bannedStudents
+        },
+        totalCourseClasses,
+        attendances,
+        remarks,
+        coursesStats
+    };
+}
+
+export async function saveSingleAttendanceAction(
+    courseId: string,
+    studentId: string,
+    dateStr: string,
+    status: "PRESENT" | "ABSENT" | "LATE" | "EXCUSED" | "UNMARKED" | "LEAVE_EARLY",
+    justification?: string,
+    arrivalTime?: string | null,
+    departureTime?: string | null
+) {
+    try {
+        const teacher = await requireTeacher();
+        await verifyCourseTeacher(courseId, teacher.id);
+
+        const dateObj = parseDateStringToUTCMidday(dateStr);
+
+        // Check week locking config per program
+        const isLocked = await checkIsCourseWeekLocked(courseId, dateObj);
+        if (isLocked) {
+            const approvedRequest = await prisma.attendancePermissionRequest.findFirst({
+                where: {
+                    courseId,
+                    teacherId: teacher.id,
+                    date: dateObj,
+                    status: "APPROVED"
+                }
+            });
+            if (!approvedRequest) {
+                throw new Error("WEEK_LOCKED");
+            }
+        }
+
+        // Find existing record using compound unique key constraint
+        const existing = await prisma.attendance.findUnique({
+            where: {
+                courseId_userId_date: {
+                    courseId,
+                    userId: studentId,
+                    date: dateObj
+                }
+            }
+        });
+
+        if (status === "UNMARKED" as any) {
+            await prisma.attendance.deleteMany({
+                where: {
+                    courseId,
+                    userId: studentId,
+                    date: dateObj
+                }
+            });
+            return { success: true, record: null };
+        }
+
+        let savedRecord: any = null;
+
+        if (status === "PRESENT") {
+            savedRecord = await prisma.attendance.upsert({
+                where: {
+                    courseId_userId_date: {
+                        courseId,
+                        userId: studentId,
+                        date: dateObj
+                    }
+                },
+                update: {
+                    status: "PRESENT",
+                    justification: null,
+                    arrivalTime: null,
+                    departureTime: null
+                },
+                create: {
+                    courseId,
+                    userId: studentId,
+                    date: dateObj,
+                    status: "PRESENT",
+                    justification: null,
+                    arrivalTime: null,
+                    departureTime: null
+                }
+            });
+        } else {
+            const dbStatus = (status === "EXCUSED" || status === "ABSENT") ? "ABSENT" : (status as any);
+            const dbJustification = status === "EXCUSED" ? (justification || "Justificado en planilla") : null;
+
+            // Handle arrivalTime parse if late or arrivalTime provided
+            let dbArrivalTime: Date | null = null;
+            if (arrivalTime) {
+                if (/^\d{2}:\d{2}$/.test(arrivalTime)) {
+                    const yyyy = dateObj.getUTCFullYear();
+                    const mm = String(dateObj.getUTCMonth() + 1).padStart(2, "0");
+                    const dd = String(dateObj.getUTCDate()).padStart(2, "0");
+                    const fullDateTimeStr = `${yyyy}-${mm}-${dd}T${arrivalTime}:00.000Z`;
+                    const d = new Date(fullDateTimeStr);
+                    if (!isNaN(d.getTime())) {
+                        dbArrivalTime = d;
+                    }
+                } else {
+                    const dateParsed = new Date(arrivalTime);
+                    if (!isNaN(dateParsed.getTime())) {
+                        dbArrivalTime = dateParsed;
+                    }
+                }
+            } else if (dbStatus === "LATE") {
+                dbArrivalTime = existing?.arrivalTime || new Date();
+            }
+
+            // Handle departureTime parse if leave early or departureTime provided
+            let dbDepartureTime: Date | null = null;
+            if (departureTime) {
+                if (/^\d{2}:\d{2}$/.test(departureTime)) {
+                    const yyyy = dateObj.getUTCFullYear();
+                    const mm = String(dateObj.getUTCMonth() + 1).padStart(2, "0");
+                    const dd = String(dateObj.getUTCDate()).padStart(2, "0");
+                    const fullDateTimeStr = `${yyyy}-${mm}-${dd}T${departureTime}:00.000Z`;
+                    const d = new Date(fullDateTimeStr);
+                    if (!isNaN(d.getTime())) {
+                        dbDepartureTime = d;
+                    }
+                } else {
+                    const dateParsed = new Date(departureTime);
+                    if (!isNaN(dateParsed.getTime())) {
+                        dbDepartureTime = dateParsed;
+                    }
+                }
+            } else if (dbStatus === "LEAVE_EARLY") {
+                dbDepartureTime = existing?.departureTime || new Date();
+            }
+
+            savedRecord = await prisma.attendance.upsert({
+                where: {
+                    courseId_userId_date: {
+                        courseId,
+                        userId: studentId,
+                        date: dateObj
+                    }
+                },
+                update: {
+                    status: dbStatus as any,
+                    justification: dbJustification,
+                    arrivalTime: dbArrivalTime,
+                    departureTime: dbDepartureTime
+                },
+                create: {
+                    courseId,
+                    userId: studentId,
+                    date: dateObj,
+                    status: dbStatus as any,
+                    justification: dbJustification,
+                    arrivalTime: dbArrivalTime,
+                    departureTime: dbDepartureTime
+                }
+            });
+        }
+
+
+
+        return { success: true, record: savedRecord };
+    } catch (error: any) {
+        console.error("Error saving single attendance:", error);
+        return { success: false, error: error.message };
+    }
+}
+
+export async function deleteRemarkAction(remarkId: string) {
+    try {
+        const teacher = await requireTeacher();
+
+        const remark = await prisma.remark.findUnique({
+            where: { id: remarkId },
+            include: { course: true }
+        });
+
+        if (!remark) throw new Error("Observación no encontrada");
+
+        // Permisos: admin o creador de la observación o profesor del curso
+        if (teacher.role !== "admin" && remark.teacherId !== teacher.id && remark.course.teacherId !== teacher.id) {
+            throw new Error("No tienes permisos para retirar esta observación.");
+        }
+
+        await prisma.remark.delete({
+            where: { id: remarkId }
+        });
+
+        revalidatePath("/dashboard/teacher");
+        return { success: true };
+    } catch (error: any) {
+        console.error("Error deleting remark:", error);
+        return { success: false, error: error.message };
+    }
+}
+
+
+
+export async function requestAttendanceEditPermissionAction(courseId: string, dateStr: string, reason?: string) {
+    try {
+        const teacher = await requireTeacher();
+        await verifyCourseTeacher(courseId, teacher.id);
+
+        const dateObj = parseDateStringToUTCMidday(dateStr);
+
+        // Check if there is already a PENDING or APPROVED request
+        const existing = await prisma.attendancePermissionRequest.findFirst({
+            where: {
+                courseId,
+                teacherId: teacher.id,
+                date: dateObj,
+                status: { in: ["PENDING", "APPROVED"] }
+            }
+        });
+
+        if (existing) {
+            return { success: false, error: `Ya existe una solicitud ${existing.status === "PENDING" ? "pendiente" : "aprobada"} para esta fecha.` };
+        }
+
+        await prisma.attendancePermissionRequest.create({
+            data: {
+                courseId,
+                teacherId: teacher.id,
+                date: dateObj,
+                status: "PENDING",
+                reason
+            }
+        });
+
+        revalidatePath("/dashboard/teacher");
+        return { success: true };
+    } catch (error: any) {
+        console.error("Error requesting edit permission:", error);
+        return { success: false, error: error.message };
+    }
+}
+
+export async function getAttendanceEditPermissionStatusAction(courseId: string, dateStr: string) {
+    try {
+        await requireTeacher();
+        
+        const dateObj = parseDateStringToUTCMidday(dateStr);
+
+        const isLocked = await checkIsCourseWeekLocked(courseId, dateObj);
+
+        return { 
+            success: true, 
+            isLocked,
+            hasPermission: !isLocked,
+            requestStatus: null,
+            reason: null,
+            limitSettingsActive: isLocked
+        };
+    } catch (error: any) {
+        console.error("Error fetching permission status:", error);
+        return { success: false, error: error.message };
+    }
+}
+
+export async function getPendingAttendancePermissionRequestsAction() {
+    try {
+        // Require admin role
+        const session = await auth.api.getSession({ headers: await headers() });
+        if (!session || (session.user.role !== "admin" && session.user.role !== "gestor")) {
+            throw new Error("Unauthorized");
+        }
+
+        const requests = await prisma.attendancePermissionRequest.findMany({
+            orderBy: { createdAt: "desc" }
+        });
+
+        // Resolve teacher names and course names manually
+        const resolvedRequests = [];
+        for (const req of requests) {
+            const teacher = await prisma.user.findUnique({ where: { id: req.teacherId } });
+            const course = await prisma.course.findUnique({ where: { id: req.courseId }, include: { group: true } });
+            resolvedRequests.push({
+                ...req,
+                teacherName: teacher?.name || "Desconocido",
+                courseName: course?.title || "Desconocido",
+                groupName: course?.group?.name || "Sin Grupo"
+            });
+        }
+
+        return { success: true, requests: resolvedRequests };
+    } catch (error: any) {
+        console.error("Error fetching pending requests:", error);
+        return { success: false, error: error.message };
+    }
+}
+
+export async function respondToAttendancePermissionRequestAction(requestId: string, status: "APPROVED" | "REJECTED") {
+    try {
+        // Require admin role
+        const session = await auth.api.getSession({ headers: await headers() });
+        if (!session || (session.user.role !== "admin" && session.user.role !== "gestor")) {
+            throw new Error("Unauthorized");
+        }
+
+        await prisma.attendancePermissionRequest.update({
+            where: { id: requestId },
+            data: { status }
+        });
+
+        revalidatePath("/dashboard/admin/settings");
+        revalidatePath("/dashboard/teacher");
+        return { success: true };
+    } catch (error: any) {
+        console.error("Error responding to permission request:", error);
+        return { success: false, error: error.message };
+    }
+}
+
+export async function resetStudentDailyAttempts(studentId: string) {
+    try {
+        await requireTeacher();
+
+        const timeHeaders = await headers();
+        const timezone = timeHeaders.get("x-vercel-ip-timezone") || "America/Bogota";
+        const todayStr = new Intl.DateTimeFormat("en-CA", {
+            timeZone: timezone,
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit"
+        }).format(new Date());
+
+        await prisma.studentAccessLog.upsert({
+            where: {
+                userId_date: {
+                    userId: studentId,
+                    date: todayStr
+                }
+            },
+            update: {
+                count: 0
+            },
+            create: {
+                userId: studentId,
+                date: todayStr,
+                count: 0
+            }
+        });
+
+        revalidatePath("/dashboard");
+        return { success: true };
+    } catch (error: any) {
+        console.error("Error resetting student daily attempts:", error);
+        return { success: false, error: error.message || "Failed to reset attempts" };
+    }
+}
+
+export async function notifyEmailSentBatchAction(_studentIds: string[], _type: "PLAN" | "REMARK" | "GENERAL") {
+    return { success: true };
+}
+

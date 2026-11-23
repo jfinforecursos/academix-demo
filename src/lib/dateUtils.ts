@@ -1,0 +1,362 @@
+import { format, parseISO } from "date-fns";
+import { es } from "date-fns/locale";
+
+/**
+ * Utilidades para el manejo consistente de fechas y zonas horarias.
+ * Objetivo: Evitar el desfase de días entre local y servidor (UTC).
+ */
+
+/**
+ * Convierte los componentes UTC de un objeto Date a la medianoche UTC.
+ * Úsalo cuando la fecha YA es una "Fecha de Calendario" en UTC (como las de Prisma)
+ * o cuando recibes una fecha ISO y quieres asegurar que se mantiene en UTC 00:00.
+ */
+export function toUTCStartOfDay(date: Date): Date {
+    return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 0, 0, 0, 0));
+}
+
+/**
+ * Convierte los componentes LOCALES de un objeto Date a la medianoche UTC.
+ * Úsalo para normalizar "hoy" (new Date()) o fechas provenientes de inputs locales
+ * (como date pickers) al registro de base de datos UTC.
+ */
+export function toUTCStartOfDayFromLocal(date: Date): Date {
+    return new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0));
+}
+
+/**
+ * Procesa una fecha que viene del servidor (asumida en UTC medianoche) para su visualización.
+ * Crea una fecha local con los mismos componentes visuales que la fecha UTC.
+ * 
+ * Ejemplo:
+ * Entrada (UTC): 2023-10-27 00:00:00Z
+ * Salida (Local): 2023-10-27 00:00:00 (Hora local, para que se ve "27")
+ * 
+ * Úsalo para visualizar fechas en componentes de UI (Calendarios, Tablas).
+ */
+export function fromUTC(date: Date | string | null | undefined): Date {
+    if (!date) return new Date();
+    const d = typeof date === 'string' ? new Date(date) : date;
+    if (isNaN(d.getTime())) return new Date();
+    return new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+}
+
+/**
+ * Formatea una fecha asumiendo que es una "Fecha de Calendario".
+ * Utiliza los componentes UTC para el formato, ignorando la zona horaria local.
+ * 
+ * @param date Fecha a formatear
+ * @param formatStr String de formato date-fns (default: PPP = "27 de octubre de 2023")
+ */
+export function formatCalendarDate(date: Date | string | null | undefined, formatStr: string = "PPP"): string {
+    if (!date) return "";
+    const d = typeof date === 'string' ? new Date(date) : date;
+    // Si la fecha es válida, extraemos componentes UTC y creamos una fecha local "falsa" para formatear
+    if (isNaN(d.getTime())) return "Fecha inválida";
+    
+    // Creamos fecha local con los datos UTC para que 'format' saque los nombres correctos
+    const visualDate = new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 12, 0, 0); 
+    // Ponemos hora 12:00 para evitar bordes raros de DST, aunque con componentes manuales es seguro.
+    
+    return format(visualDate, formatStr, { locale: es });
+}
+
+/**
+ * Parsea un string YYYY-MM-DD directamente a UTC Midnight.
+ */
+export function parseISOAsUTC(dateString: string): Date {
+    if (!dateString) return new Date();
+    // new Date("YYYY-MM-DD") en ISO estándar devuelve UTC 00:00
+    // Aseguramos que sea tratado así.
+    return new Date(dateString);
+}
+/**
+ * Formatea una fecha con hora.
+ */
+export function formatDateTime(date: Date | string, formatStr: string = "dd/MM/yyyy HH:mm"): string {
+    const d = typeof date === 'string' ? new Date(date) : date;
+    if (isNaN(d.getTime())) return "Fecha inválida";
+    return format(d, formatStr, { locale: es });
+}
+
+/**
+ * Retorna la fecha actual formateada en español (ej: "jueves, 23 de julio de 2026").
+ * Por defecto asegura la zona horaria oficial de Colombia (America/Bogota, UTC-5),
+ * evitando discrepancias cuando el servidor corre en UTC (Vercel/Docker/AWS).
+ */
+export function getFormattedTodayDate(timeZone: string = "America/Bogota"): string {
+    const options: Intl.DateTimeFormatOptions = {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        timeZone,
+    };
+    return new Intl.DateTimeFormat('es-ES', options).format(new Date());
+}
+
+/**
+ * Formatea una fecha y hora garantizando la zona horaria de Colombia (America/Bogota, UTC-5)
+ * tanto en ejecución del servidor como en el cliente.
+ */
+export function formatColombianDateTime(
+    date: Date | string | null | undefined,
+    options?: Intl.DateTimeFormatOptions
+): string {
+    if (!date) return "";
+    const d = typeof date === 'string' ? new Date(date) : date;
+    if (isNaN(d.getTime())) return "Fecha inválida";
+    
+    const defaultOptions: Intl.DateTimeFormatOptions = {
+        timeZone: "America/Bogota",
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true,
+        ...options,
+    };
+    return new Intl.DateTimeFormat("es-CO", defaultOptions).format(d);
+}
+
+/**
+ * Retorna la fecha de hoy en Colombia (America/Bogota) en formato ISO "YYYY-MM-DD".
+ * Garantiza que tanto en servidores en la nube (Vercel/Docker UTC) como en entornos locales
+ * la fecha de trabajo sea idéntica y consistente.
+ */
+export function getTodayColombianDate(): string {
+    return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Bogota" }).format(new Date());
+}
+
+/**
+ * Determina si una fecha o rango de fechas corresponde a la vigencia actual en Colombia (America/Bogota).
+ * Compara las fechas de calendario en formato YYYY-MM-DD para evitar desfases de zona horaria entre
+ * el servidor (generalmente UTC en producción/Vercel/Docker) y el cliente local en Colombia.
+ */
+export function isScheduleCurrent(startDate: Date | string, endDate: Date | string): boolean {
+    if (!startDate || !endDate) return false;
+    try {
+        const todayInColombia = getTodayColombianDate();
+        const startYMD = toCalendarYMD(startDate);
+        const endYMD = toCalendarYMD(endDate);
+        if (!startYMD || !endYMD) return false;
+
+        return todayInColombia >= startYMD && todayInColombia <= endYMD;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Determina si una fecha límite (calendario) ha expirado según el tiempo de Colombia (America/Bogota).
+ * La fecha se considera vencida ÚNICAMENTE cuando el día de hoy en Colombia es estrictamente
+ * posterior a la fecha límite (es decir, el aprendiz tiene todo el día límite hasta las 23:59:59 para entregar).
+ */
+export function isDateExpired(endDate: Date | string | null | undefined): boolean {
+    if (!endDate) return false;
+    try {
+        const todayInColombia = getTodayColombianDate();
+        const endYMD = toCalendarYMD(endDate);
+        if (!endYMD) return false;
+        return todayInColombia > endYMD;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Extrae el año de calendario en formato string ("2026") a partir de una fecha o nombre de horario,
+ * utilizando componentes UTC para ser completamente inmune a diferencias de zona horaria entre
+ * servidor y cliente local.
+ */
+export function getScheduleCalendarYear(s: { name?: string; startDate?: string | Date | null }): string {
+    if (s.startDate) {
+        try {
+            if (typeof s.startDate === "string" && s.startDate.length >= 4) {
+                const yrStr = s.startDate.slice(0, 4);
+                if (/^20\d\d$/.test(yrStr)) return yrStr;
+            }
+            const yr = new Date(s.startDate).getUTCFullYear();
+            if (!isNaN(yr)) return yr.toString();
+        } catch {}
+    }
+    const match = s.name?.match(/\b(20\d\d)\b/);
+    if (match) return match[1];
+    return new Date().getFullYear().toString();
+}
+
+/**
+ * Convierte de manera determinista cualquier fecha (Date o string) a formato YYYY-MM-DD
+ * usando componentes UTC para evitar cualquier desfase por huso horario local.
+ */
+export function toCalendarYMD(date: Date | string | null | undefined): string {
+    if (!date) return "";
+    if (typeof date === "string") {
+        if (/^\d{4}-\d{2}-\d{2}/.test(date)) {
+            return date.slice(0, 10);
+        }
+    }
+    const d = typeof date === "string" ? new Date(date) : date;
+    if (isNaN(d.getTime())) return "";
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(d.getUTCDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+}
+
+/**
+ * Normaliza cualquier fecha a las 12:00:00.000 UTC (medio día UTC).
+ * Esta hora es ideal para almacenamiento de fechas de calendario como asistencias y eventos,
+ * ya que nunca cruza el cambio de día en ningún huso horario del mundo (desde UTC-11 hasta UTC+12).
+ */
+export function parseDateStringToUTCMidday(date: Date | string | null | undefined): Date {
+    if (!date) return new Date();
+    if (typeof date === "string" && /^\d{4}-\d{2}-\d{2}/.test(date)) {
+        const [y, m, d] = date.slice(0, 10).split("-").map(Number);
+        return new Date(Date.UTC(y, m - 1, d, 12, 0, 0, 0));
+    }
+    const d = typeof date === "string" ? new Date(date) : date;
+    if (isNaN(d.getTime())) return new Date();
+    return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 12, 0, 0, 0));
+}
+
+/**
+ * Verifica si una fecha pertenece a la semana actual (lunes a domingo) según el calendario
+ * oficial de Colombia (America/Bogota), garantizando que funcione de forma idéntica
+ * tanto en servidores en la nube (Vercel/Docker UTC) como en clientes locales.
+ */
+export function isDateInColombianWeek(date: Date | string): boolean {
+    if (!date) return false;
+    const targetYMD = toCalendarYMD(date);
+    if (!targetYMD) return false;
+
+    const todayYMD = getTodayColombianDate();
+    const [ty, tm, td] = todayYMD.split("-").map(Number);
+    const refDate = new Date(Date.UTC(ty, tm - 1, td, 12, 0, 0, 0));
+
+    const dayOfWeek = refDate.getUTCDay(); // 0 = Domingo, 1 = Lunes, ...
+    const diffToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+
+    const monday = new Date(Date.UTC(ty, tm - 1, td + diffToMonday, 12, 0, 0, 0));
+    const sunday = new Date(Date.UTC(ty, tm - 1, td + diffToMonday + 6, 12, 0, 0, 0));
+
+    const mondayYMD = toCalendarYMD(monday);
+    const sundayYMD = toCalendarYMD(sunday);
+
+    return targetYMD >= mondayYMD && targetYMD <= sundayYMD;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CÁLCULO OFICIAL DE DÍAS FESTIVOS EN COLOMBIA (LEY 51 DE 1983 - LEY EMILIANI Y LEY 2578)
+// Garantiza compatibilidad universal determinista en entornos locales y en servidor (Vercel, Docker UTC).
+// ─────────────────────────────────────────────────────────────────────────────
+
+function calculateEasterSundayUTC(year: number): Date {
+    const a = year % 19;
+    const b = Math.floor(year / 100);
+    const c = year % 100;
+    const d = Math.floor(b / 4);
+    const e = b % 4;
+    const f = Math.floor((b + 8) / 25);
+    const g = Math.floor((b - f + 1) / 3);
+    const h = (19 * a + b - d - g + 15) % 30;
+    const i = Math.floor(c / 4);
+    const k = c % 4;
+    const l = (32 + 2 * e + 2 * i - h - k) % 7;
+    const m = Math.floor((a + 11 * h + 22 * l) / 451);
+    const month = Math.floor((h + l - 7 * m + 114) / 31);
+    const day = ((h + l - 7 * m + 114) % 31) + 1;
+    return new Date(Date.UTC(year, month - 1, day, 12, 0, 0, 0));
+}
+
+function nextMondayUTC(date: Date): Date {
+    const r = new Date(date);
+    const day = r.getUTCDay();
+    if (day === 1) return r; // Ya es lunes
+    const diff = (8 - day) % 7;
+    r.setUTCDate(r.getUTCDate() + (diff === 0 ? 7 : diff));
+    return r;
+}
+
+function addDaysUTC(date: Date, days: number): Date {
+    const r = new Date(date);
+    r.setUTCDate(r.getUTCDate() + days);
+    return r;
+}
+
+export interface ColombianHoliday {
+    date: string; // YYYY-MM-DD
+    name: string;
+}
+
+const holidaysCache: Record<number, ColombianHoliday[]> = {};
+
+/**
+ * Obtiene la lista completa de días festivos en Colombia para un año específico.
+ */
+export function getColombianHolidays(year: number): ColombianHoliday[] {
+    if (holidaysCache[year]) {
+        return holidaysCache[year];
+    }
+
+    const holidays: ColombianHoliday[] = [];
+
+    // 1. Festivos de fecha fija (No se trasladan)
+    holidays.push({ date: `${year}-01-01`, name: "Año Nuevo" });
+    holidays.push({ date: `${year}-05-01`, name: "Día del Trabajo" });
+    holidays.push({ date: `${year}-07-20`, name: "Día de la Independencia" });
+    holidays.push({ date: `${year}-08-07`, name: "Batalla de Boyacá" });
+    holidays.push({ date: `${year}-12-08`, name: "Inmaculada Concepción" });
+    holidays.push({ date: `${year}-12-25`, name: "Navidad" });
+
+    // 2. Festivos con traslado al siguiente lunes (Ley Emiliani / Ley 51 de 1983)
+    holidays.push({ date: toCalendarYMD(nextMondayUTC(new Date(Date.UTC(year, 0, 6, 12)))), name: "Reyes Magos" });
+    holidays.push({ date: toCalendarYMD(nextMondayUTC(new Date(Date.UTC(year, 2, 19, 12)))), name: "San José" });
+    holidays.push({ date: toCalendarYMD(nextMondayUTC(new Date(Date.UTC(year, 5, 29, 12)))), name: "San Pedro y San Pablo" });
+    // Festivo nacional Virgen de Chiquinquirá (Ley 2578, 9 de julio con regla Ley Emiliani)
+    holidays.push({ date: toCalendarYMD(nextMondayUTC(new Date(Date.UTC(year, 6, 9, 12)))), name: "Virgen de Chiquinquirá" });
+    holidays.push({ date: toCalendarYMD(nextMondayUTC(new Date(Date.UTC(year, 7, 15, 12)))), name: "Asunción de la Virgen" });
+    holidays.push({ date: toCalendarYMD(nextMondayUTC(new Date(Date.UTC(year, 9, 12, 12)))), name: "Día de la Raza" });
+    holidays.push({ date: toCalendarYMD(nextMondayUTC(new Date(Date.UTC(year, 10, 1, 12)))), name: "Todos los Santos" });
+    holidays.push({ date: toCalendarYMD(nextMondayUTC(new Date(Date.UTC(year, 10, 11, 12)))), name: "Independencia de Cartagena" });
+
+    // 3. Festivos móviles relativos a la Pascua (Semana Santa y celebraciones católicas)
+    const easter = calculateEasterSundayUTC(year);
+    holidays.push({ date: toCalendarYMD(addDaysUTC(easter, -3)), name: "Jueves Santo" });
+    holidays.push({ date: toCalendarYMD(addDaysUTC(easter, -2)), name: "Viernes Santo" });
+    holidays.push({ date: toCalendarYMD(nextMondayUTC(addDaysUTC(easter, 40))), name: "Ascensión del Señor" });
+    holidays.push({ date: toCalendarYMD(nextMondayUTC(addDaysUTC(easter, 60))), name: "Corpus Christi" });
+    holidays.push({ date: toCalendarYMD(nextMondayUTC(addDaysUTC(easter, 68))), name: "Sagrado Corazón de Jesús" });
+
+    holidays.sort((a, b) => a.date.localeCompare(b.date));
+    holidaysCache[year] = holidays;
+    return holidays;
+}
+
+/**
+ * Determina si una fecha dada (Date o string YYYY-MM-DD) es día festivo oficial en Colombia.
+ * Retorna el nombre del festivo si lo es, o null si es día hábil.
+ */
+export function getColombianHolidayName(date: Date | string | null | undefined): string | null {
+    if (!date) return null;
+    const ymd = toCalendarYMD(date);
+    if (!ymd || ymd.length < 4) return null;
+
+    const year = parseInt(ymd.slice(0, 4), 10);
+    if (isNaN(year)) return null;
+
+    const holidays = getColombianHolidays(year);
+    const holiday = holidays.find(h => h.date === ymd);
+    return holiday ? holiday.name : null;
+}
+
+/**
+ * Retorna true si la fecha es festivo en Colombia.
+ */
+export function isColombianHoliday(date: Date | string | null | undefined): boolean {
+    return getColombianHolidayName(date) !== null;
+}
+
+
+

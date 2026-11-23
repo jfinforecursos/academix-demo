@@ -1,0 +1,35 @@
+export {
+    getAdminDashboardStatsAction,
+    getRecentActivityAction,
+    getAllUsersAction,
+    getAllFilteredUserIdsAction,
+    getUserEmailsAction,
+    getAllCoursesForFilterAction,
+    createUserAction,
+    getUserDetailsAction,
+    updateUserRoleAction,
+    toggleUserBanAction,
+    deleteUserAction,
+    getAllCoursesAdminAction,
+    getCourseDetailsAdminAction,
+    bulkArchiveCoursesAction,
+    bulkDeleteUsersAction,
+    getSystemSettingsAction,
+    updateSystemSettingsAction,
+    deleteCourseAction,
+    resetUserPasswordToDocAction,
+    getComprehensiveGroupAnalyticsAction,
+    getStudentBehaviorAnalyticsAction,
+    getAdminsAndObserversAction,
+    createAdminOrObserverAction,
+    updateAdminOrObserverAction,
+    deleteAdminOrObserverAction,
+    updateStudentNovedadAction,
+    updateStudentAction,
+    updateTeacherUserAction
+} from "@/features/admin/actions/adminActions";
+
+export { assignStudentToGroupAction } from "@/features/admin/actions/academicActions";
+export { getPendingAttendancesSummaryAction } from "@/features/admin/actions/pendingAttendanceActions";
+
+

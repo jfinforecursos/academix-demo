@@ -1,0 +1,7006 @@
+"use client";
+import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip";
+
+
+const toISODateString = (dateVal: any) => {
+    if (!dateVal) return undefined;
+    if (typeof dateVal === "string" && /^\d{4}-\d{2}-\d{2}/.test(dateVal)) {
+        return dateVal.slice(0, 10);
+    }
+    const d = new Date(dateVal);
+    if (isNaN(d.getTime())) return undefined;
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(d.getUTCDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+};
+
+const calculateHoursDiff = (startTimeStr: string, endTimeStr: string): number => {
+    if (!startTimeStr || !endTimeStr) return 0;
+    const [sh, sm] = startTimeStr.split(":").map(Number);
+    const [eh, em] = endTimeStr.split(":").map(Number);
+    
+    const startMins = sh * 60 + sm;
+    const endMins = eh * 60 + em;
+    
+    if (endMins <= startMins) return 0;
+    
+    const diffMins = endMins - startMins;
+    const hours = diffMins / 60;
+    
+    return Math.round(hours * 100) / 100;
+};
+
+const formatTime12h = (timeStr: any): string => {
+    if (!timeStr) return "";
+    let match = "";
+    if (timeStr instanceof Date) {
+        const hours = timeStr.getUTCHours().toString().padStart(2, "0");
+        const minutes = timeStr.getUTCMinutes().toString().padStart(2, "0");
+        match = `${hours}:${minutes}`;
+    } else if (typeof timeStr === "string") {
+        match = timeStr;
+        if (match.includes("T")) {
+            match = match.substring(11, 16);
+        }
+    } else {
+        return String(timeStr);
+    }
+    
+    const parts = match.split(":");
+    if (parts.length < 2) return match;
+    const hour = parseInt(parts[0], 10);
+    const min = parseInt(parts[1], 10);
+    if (isNaN(hour) || isNaN(min)) return match;
+    
+    const ampm = hour >= 12 ? "PM" : "AM";
+    const hour12 = hour % 12 || 12;
+    const minutesStr = min.toString().padStart(2, "0");
+    return `${hour12}:${minutesStr} ${ampm}`;
+};
+
+const getJustificationLink = (rec?: { justification?: string | null; justificationUrl?: string | null } | null) => {
+    if (!rec) return null;
+    if (rec.justificationUrl && rec.justificationUrl.trim().length > 0) {
+        const url = rec.justificationUrl.trim();
+        return url.startsWith("http://") || url.startsWith("https://") ? url : `https://${url}`;
+    }
+    if (rec.justification) {
+        const text = rec.justification.trim();
+        if (text.startsWith("http://") || text.startsWith("https://")) {
+            return text;
+        }
+        const match = text.match(/(https?:\/\/[^\s]+)/i);
+        if (match) {
+            return match[0];
+        }
+    }
+    return null;
+};
+
+import { useState, useEffect, useMemo, useRef } from "react";
+import Link from "next/link";
+import * as htmlToImage from "html-to-image";
+import { createPortal } from "react-dom";
+import { format } from "date-fns";
+import { Users, User, Check, Key, Clock, Lock, Unlock, MessageSquare, Save, Search, ShieldAlert, UserX, UserCheck, ArrowRight, ArrowLeft, Play, LayoutList, ListTodo, CheckSquare, Mail, Eye, EyeOff, GraduationCap, BookOpen, Loader2, HelpCircle, FileText, X, ClipboardList, History, FileSpreadsheet, FileDown, Trash2, ChevronDown, Dices, Shuffle, ChevronLeft, ChevronRight, BarChart3, LogOut, RefreshCw, RotateCcw, Sparkles, ExternalLink, AlertTriangle, Plus, Info, GitBranch, CalendarClock, CalendarDays, Calendar, CalendarX, Award, ShieldCheck, Building, SlidersHorizontal, Tag } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Checkbox } from "@/components/ui/checkbox";
+import { formatName, cn } from "@/lib/utils";
+import { resolveAttendanceStatusStyle } from "@/lib/attendanceStatusStyles";
+import { formatCalendarDate, fromUTC, getTodayColombianDate, toCalendarYMD, isScheduleCurrent, isColombianHoliday, getColombianHolidayName } from "@/lib/dateUtils";
+import { toast } from "sonner";
+import { authClient } from "@/lib/auth-client";
+import { resetStudentPassword, saveAttendanceBatch, saveRemarkBatch, getGroupAttendanceHistory, getGroupRemarksHistory, getTeacherComprehensiveGroupAnalyticsAction, saveSingleAttendanceAction, deleteRemarkAction, resetStudentDailyAttempts, notifyEmailSentBatchAction } from "../actions/groupActions";
+import { getRemarkTemplatesAction } from "../actions/remarkActions";
+import { interpolateRemarkTemplate, type CustomVariableDefinition } from "../utils/remarkTemplateVariables";
+import { getGroupImprovementPlans, upsertImprovementPlan, deleteImprovementPlan, deleteSignedDocument, deleteTeacherSignedDoc, submitTeacherSignedDoc, markPlanViewed, resetPlanToStep, gradeImprovementPlan } from "@/features/student/actions/improvementPlanActions";
+import * as XLSX from "xlsx";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
+import {
+    generateAndDownloadAttendanceMatrixExcel,
+    generateAndDownloadAttendanceMatrixPdf,
+    generateAndDownloadAttendanceHistoryExcel,
+    generateAndDownloadAttendanceHistoryPdf,
+    generateAndDownloadAttendanceMetricsExcel,
+    generateAndDownloadAttendanceMetricsPdf,
+} from "../utils/teacherAttendanceExportUtils";
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
+import { CourseDocLinks } from "./CourseDocLinks";
+import { GroupScheduleAttendanceView } from "./GroupScheduleAttendanceView";
+import { GroupAnalyticsPanel } from "@/components/analytics/GroupAnalyticsPanel";
+import { StudentRecords } from "@/features/student/components/StudentRecords";
+import { StudentNovedadBadge } from "@/components/StudentNovedadBadge";
+import { StudentVoceroBadge } from "@/components/StudentVoceroBadge";
+import { Dialog, DialogContent, DialogTitle, DialogDescription, DialogHeader, DialogFooter } from "@/components/ui/dialog";
+import { GradeManagerPanel } from "./GradeManagerPanel";
+import { getLostHoursForAttendance, extractTimeHHmm, calculateTotalScheduledHours, calculateStudentAttendanceLoss, getSessionScheduleForDay, getSessionTimeOptions } from "@/lib/gradePenaltyUtils";
+import { TeacherHelpModal } from "./TeacherHelpModal";
+import { getEffectivePlanHistory, getCleanObservations } from "@/features/student/utils/improvementPlanHistory";
+import { PlanEvidenceHistoryList } from "@/features/student/components/PlanEvidenceHistoryList";
+import { RequestResubmissionModal } from "./RequestResubmissionModal";
+import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Switch } from "@/components/ui/switch";
+import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { useAppRefresh } from "@/lib/app-refresh";
+
+interface GroupManagerProps {
+    groups: any[];
+    scheduleStartDate?: string | null;
+    scheduleEndDate?: string | null;
+    teacherName?: string;
+    displayDate?: string;
+}
+
+export const getGroupTimelineName = (group: any): string | null => {
+    if (!group) return null;
+    const activeSlot = group.scheduleSlots?.find((slot: any) =>
+        slot.academicSchedule && (
+            isScheduleCurrent(slot.academicSchedule.startDate, slot.academicSchedule.endDate) ||
+            slot.academicSchedule.isActive
+        ) && slot.period?.timeline?.name
+    ) || group.scheduleSlots?.find((slot: any) => slot.period?.timeline?.name);
+
+    if (activeSlot?.period?.timeline?.name) {
+        return activeSlot.period.timeline.name;
+    }
+
+    const slotWithPeriod = group.scheduleSlots?.find((slot: any) => slot.period);
+    if (slotWithPeriod?.period) {
+        return slotWithPeriod.period.timeline?.name || "Jornada Regular";
+    }
+
+    if (group.program?.timelines?.length > 0) {
+        const def = group.program.timelines.find((t: any) => t.isDefault) || group.program.timelines[0];
+        return def.name;
+    }
+
+    return null;
+};
+
+export const getGroupPeriodName = (group: any): string | null => {
+    if (!group) return null;
+    const activeSlot = group.scheduleSlots?.find((slot: any) =>
+        slot.academicSchedule && (
+            isScheduleCurrent(slot.academicSchedule.startDate, slot.academicSchedule.endDate) ||
+            slot.academicSchedule.isActive
+        ) && slot.period?.name
+    ) || group.scheduleSlots?.find((slot: any) => slot.period?.name);
+
+    return activeSlot?.period?.name || group.period?.name || null;
+};
+
+export function GroupManager({ groups, scheduleStartDate, scheduleEndDate, teacherName, displayDate }: GroupManagerProps) {
+    const { data: session } = authClient.useSession();
+    const teacherId = session?.user?.id;
+
+    const getEffectiveDatesForCourse = (group: any, courseId: string) => {
+        if (!group) return { start: scheduleStartDate || null, end: scheduleEndDate || null };
+
+        const course = group.courses?.find((c: any) => c.id === courseId);
+
+        // 1. Horario académico específico asignado al curso que esté vigente según calendario colombiano
+        if (course?.academicSchedule?.startDate && course?.academicSchedule?.endDate) {
+            if (isScheduleCurrent(course.academicSchedule.startDate, course.academicSchedule.endDate)) {
+                return {
+                    start: course.academicSchedule.startDate,
+                    end: course.academicSchedule.endDate
+                };
+            }
+        }
+
+        // 2. Horario académico asignado al grupo en sus franjas (priorizando vigente/activo)
+        const slotSchedule = group.scheduleSlots?.find((slot: any) =>
+            slot.academicSchedule && isScheduleCurrent(slot.academicSchedule.startDate, slot.academicSchedule.endDate)
+        )?.academicSchedule;
+
+        if (slotSchedule?.startDate && slotSchedule?.endDate) {
+            return {
+                start: slotSchedule.startDate,
+                end: slotSchedule.endDate
+            };
+        }
+
+        // 3. Horario vigente global pasado como prop desde el servidor
+        if (scheduleStartDate && scheduleEndDate) {
+            return {
+                start: scheduleStartDate,
+                end: scheduleEndDate
+            };
+        }
+
+        // 4. Fallback al horario asignado al curso o al slot aunque no cumpla isScheduleCurrent hoy
+        if (course?.academicSchedule?.startDate && course?.academicSchedule?.endDate) {
+            return {
+                start: course.academicSchedule.startDate,
+                end: course.academicSchedule.endDate
+            };
+        }
+
+        const fallbackSlot = group.scheduleSlots?.find((slot: any) =>
+            slot.academicSchedule?.isActive
+        )?.academicSchedule || group.scheduleSlots?.[0]?.academicSchedule;
+
+        if (fallbackSlot?.startDate && fallbackSlot?.endDate) {
+            return {
+                start: fallbackSlot.startDate,
+                end: fallbackSlot.endDate
+            };
+        }
+
+        // 5. Fechas del grupo o programa como fallback
+        const groupStart = scheduleStartDate || group.startDate || group.program?.startDate || null;
+        const groupEnd = scheduleEndDate || group.endDate || group.program?.endDate || null;
+
+        return {
+            start: groupStart,
+            end: groupEnd
+        };
+    };
+
+    const isDateValidForGroupAndCourse = (group: any, dateStr: string, courseId: string) => {
+        if (!group) return false;
+        // Los días festivos oficiales en Colombia quedan bloqueados para toma de asistencia
+        if (isColombianHoliday(dateStr)) return false;
+
+        const dateVal = new Date(dateStr + "T12:00:00Z");
+        
+        const { start: groupStart, end: groupEnd } = getEffectiveDatesForCourse(group, courseId);
+        if (groupStart) {
+            const startLimit = new Date(toISODateString(groupStart) + "T12:00:00Z");
+            if (dateVal < startLimit) return false;
+        }
+        
+        if (groupEnd) {
+            const endLimit = new Date(toISODateString(groupEnd) + "T12:00:00Z");
+            if (dateVal > endLimit) return false;
+        }
+        
+        const course = group.courses?.find((c: any) => c.id === courseId);
+        if (!course) return false;
+        
+        const scheduledDays = course.schedules?.map((s: any) => s.dayOfWeek) || [];
+        const daysOfWeek = ["SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"];
+        const dayOfWeekStr = daysOfWeek[dateVal.getUTCDay()];
+        
+        return scheduledDays.includes(dayOfWeekStr);
+    };
+
+    const isDateValidForAttendance = (dateStr: string, courseId: string) => {
+        return isDateValidForGroupAndCourse(selectedGroup, dateStr, courseId);
+    };
+
+    const findClosestValidDate = (refDateStr: string, courseId: string) => {
+        if (!selectedGroup) return refDateStr;
+        const course = selectedGroup.courses?.find((c: any) => c.id === courseId);
+        if (!course) return refDateStr;
+        
+        const scheduledDays = course.schedules?.map((s: any) => s.dayOfWeek) || [];
+        if (scheduledDays.length === 0) return refDateStr;
+        
+        const daysOfWeek = ["SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"];
+        
+        const { start: groupStart, end: groupEnd } = getEffectiveDatesForCourse(selectedGroup, courseId);
+
+        // Start date of group/program
+        const startLimit = groupStart ? new Date(toISODateString(groupStart) + "T12:00:00Z") : null;
+        // End date of group/program
+        const endLimit = groupEnd ? new Date(toISODateString(groupEnd) + "T12:00:00Z") : null;
+        
+        const refDate = new Date(refDateStr + "T12:00:00Z");
+        
+        // If refDate is already valid and within limits, return it
+        const refDayOfWeek = daysOfWeek[refDate.getUTCDay()];
+        const isWithinStart = !startLimit || refDate >= startLimit;
+        const isWithinEnd = !endLimit || refDate <= endLimit;
+        if (scheduledDays.includes(refDayOfWeek) && isWithinStart && isWithinEnd) {
+            return refDateStr;
+        }
+        
+        // Prioridad 1: Buscar hacia atrás (última sesión de clase completada dentro del horario vigente)
+        for (let offset = 1; offset <= 30; offset++) {
+            const prevDate = new Date(refDate);
+            prevDate.setUTCDate(refDate.getUTCDate() - offset);
+            const prevDayOfWeek = daysOfWeek[prevDate.getUTCDay()];
+            const prevWithinStart = !startLimit || prevDate >= startLimit;
+            const prevWithinEnd = !endLimit || prevDate <= endLimit;
+            if (scheduledDays.includes(prevDayOfWeek) && prevWithinStart && prevWithinEnd) {
+                return toISODateString(prevDate)!;
+            }
+        }
+
+        // Prioridad 2: Si no hay días pasados dentro del período (ej: el horario inicia en el futuro), buscar hacia adelante
+        for (let offset = 1; offset <= 30; offset++) {
+            const nextDate = new Date(refDate);
+            nextDate.setUTCDate(refDate.getUTCDate() + offset);
+            const nextDayOfWeek = daysOfWeek[nextDate.getUTCDay()];
+            const nextWithinStart = !startLimit || nextDate >= startLimit;
+            const nextWithinEnd = !endLimit || nextDate <= endLimit;
+            if (scheduledDays.includes(nextDayOfWeek) && nextWithinStart && nextWithinEnd) {
+                return toISODateString(nextDate)!;
+            }
+        }
+        
+        return refDateStr;
+    };
+
+    const getValidClassDaysList = () => {
+        if (!selectedGroup || !attCourseId) return [];
+        
+        const { start: effectiveStart, end: effectiveEnd } = getEffectiveDatesForCourse(selectedGroup, attCourseId);
+
+        const attForCourse = attendanceHistory.filter((a: any) => a.courseId === attCourseId);
+        const earliestAtt = attForCourse.length > 0
+            ? new Date(Math.min(...attForCourse.map((a: any) => new Date(a.date).getTime())))
+            : null;
+            
+        const threeMonthsAgo = new Date();
+        threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+        
+        const startDate = effectiveStart
+            ? new Date(effectiveStart)
+            : (earliestAtt ?? threeMonthsAgo);
+            
+        const endDate = effectiveEnd
+            ? new Date(effectiveEnd)
+            : new Date();
+            
+        const dayIndexMap: Record<string, number> = {
+            SUNDAY: 0, MONDAY: 1, TUESDAY: 2, WEDNESDAY: 3,
+            THURSDAY: 4, FRIDAY: 5, SATURDAY: 6
+        };
+        
+        const course = selectedGroup.courses?.find((c: any) => c.id === attCourseId);
+        const scheduledDays = (course?.schedules && course.schedules.length > 0)
+            ? course.schedules.map((s: any) => s.dayOfWeek)
+            : (selectedGroup.scheduleSlots?.map((s: any) => s.dayOfWeek) || []);
+        
+        const classDays: Date[] = [];
+        const cur = new Date(startDate);
+        cur.setUTCHours(12, 0, 0, 0); // stable UTC noon
+        const end = new Date(endDate);
+        end.setUTCHours(12, 0, 0, 0);
+        
+        while (cur <= end) {
+            const jsDay = cur.getUTCDay();
+            const isClassDay = scheduledDays.some((d: any) => dayIndexMap[d] === jsDay);
+            if (isClassDay) classDays.push(new Date(cur));
+            cur.setUTCDate(cur.getUTCDate() + 1);
+        }
+        
+        // Union with actual attendance dates, but strictly bounded within the schedule period
+        const allDateStrings = new Set<string>();
+        classDays.forEach(d => {
+            const ds = toISODateString(d);
+            if (ds) allDateStrings.add(ds);
+        });
+
+        const startLimit = effectiveStart ? new Date(toISODateString(effectiveStart) + "T12:00:00Z") : null;
+        const endLimit = effectiveEnd ? new Date(toISODateString(effectiveEnd) + "T12:00:00Z") : null;
+
+        attForCourse.forEach((a: any) => {
+            const ds = toISODateString(new Date(a.date));
+            if (ds) {
+                const dt = new Date(ds + "T12:00:00Z");
+                const withinBounds = (!startLimit || dt >= startLimit) && (!endLimit || dt <= endLimit);
+                if (withinBounds) {
+                    allDateStrings.add(ds);
+                }
+            }
+        });
+        
+        // Always ensure today Colombian date is included in the date list even if not a scheduled class day
+        const todayStr = getTodayColombianDate();
+        if (todayStr) {
+            allDateStrings.add(todayStr);
+        }
+
+        return Array.from(allDateStrings).sort(); // returns YYYY-MM-DD strings sorted chronologically
+    };
+    
+    const initialGroupId = useMemo(() => {
+        const todayStr = getTodayColombianDate();
+        const groupScheduledToday = groups.find((g: any) =>
+            g.courses?.some((c: any) => isDateValidForGroupAndCourse(g, todayStr, c.id))
+        );
+        return groupScheduledToday?.id || groups[0]?.id || "";
+    }, [groups]);
+
+    const [selectedGroupId, setSelectedGroupId] = useState<string>(initialGroupId);
+    const [activeTab, setActiveTab] = useState<"students" | "attendance" | "schedule-attendance" | "remarks" | "analytics" | "grades" | "documentation" | "improvement">("attendance");
+
+    const selectedGroup = groups.find(g => g.id === selectedGroupId);
+
+    const groupScheduleInfo = useMemo(() => {
+        if (!selectedGroup) return null;
+        
+        const allSchedules = (selectedGroup.courses || []).flatMap((c: any) => c.schedules || []);
+        
+        if (allSchedules.length === 0) {
+            const timeStr = (selectedGroup.startTime && selectedGroup.endTime) 
+                ? `${selectedGroup.startTime} - ${selectedGroup.endTime}` 
+                : "";
+            return {
+                days: "Sin días",
+                time: timeStr
+            };
+        }
+        
+        const dayMap: Record<string, string> = {
+            MONDAY: "Lun",
+            TUESDAY: "Mar",
+            WEDNESDAY: "Mié",
+            THURSDAY: "Jue",
+            FRIDAY: "Vie",
+            SATURDAY: "Sáb",
+            SUNDAY: "Dom"
+        };
+        
+        const dayOrder = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"];
+        
+        const uniqueDays = Array.from(new Set(allSchedules.map((s: any) => s.dayOfWeek)))
+            .sort((a: any, b: any) => dayOrder.indexOf(a) - dayOrder.indexOf(b))
+            .map((day: any) => dayMap[day] || day);
+            
+        const daysStr = uniqueDays.join(", ");
+        const uniqueHours = Array.from(new Set(allSchedules.map((s: any) => `${s.startTime} - ${s.endTime}`)));
+        const hoursStr = uniqueHours.join(" / ");
+        
+        return {
+            days: daysStr,
+            time: hoursStr
+        };
+    }, [selectedGroup]);
+
+    const timeOptions = useMemo(() => {
+        const slots: string[] = [];
+        // Generar intervalos de 15 minutos cubriendo todas las jornadas SENA (06:00 a 22:00) como fallback global
+        for (let m = 6 * 60; m <= 22 * 60; m += 15) {
+            const h = Math.floor(m / 60).toString().padStart(2, "0");
+            const min = (m % 60).toString().padStart(2, "0");
+            slots.push(`${h}:${min}`);
+        }
+        return slots;
+    }, []);
+    
+    // Students Tab State
+    const [searchQuery, setSearchQuery] = useState("");
+    const [selectedStudents, setSelectedStudents] = useState<string[]>([]);
+    const [isResetting, setIsResetting] = useState(false);
+    const [studentToResetPassword, setStudentToResetPassword] = useState<any | null>(null);
+    const [resetPasswordDialogOpen, setResetPasswordDialogOpen] = useState(false);
+    const [selectedStudentForAnalytics, setSelectedStudentForAnalytics] = useState<any>(null);
+
+    // ── Improvement Plan State ──
+    const [groupPlans, setGroupPlans] = useState<any[]>([]);
+    const [groupPlansLoading, setGroupPlansLoading] = useState(false);
+    const [impPlanFormDialog, setImpPlanFormDialog] = useState<{
+        open: boolean;
+        id?: string;
+        studentId: string;
+        planNumber: string;
+        teacherDocUrl: string;
+        startDate: string;
+        endDate: string;
+        observations: string;
+        planScore: number | "";
+        finalGrade: number | "";
+        evidenceUrl: string;
+    } | null>(null);
+    const [viewGroupPlanDetail, setViewGroupPlanDetail] = useState<any | null>(null);
+    const [impDeleteConfirm, setImpDeleteConfirm] = useState<string | null>(null); // planId to delete
+    const [impTeacherSignDialog, setImpTeacherSignDialog] = useState<{ planId: string; url: string } | null>(null);
+    const [resetPlanDialog, setResetPlanDialog] = useState<{ open: boolean; planId: string; stepNumber: number; reason: string } | null>(null);
+    const [gradePlanDialog, setGradePlanDialog] = useState<{ open: boolean; planId: string; grade: string } | null>(null);
+    const [resubmitPlanModal, setResubmitPlanModal] = useState<{
+        open: boolean;
+        planId: string;
+        planNumber?: string;
+        studentName?: string;
+        currentEndDate?: string | Date;
+        currentEvidenceUrl?: string | null;
+    } | null>(null);
+    const [viewJustificationDialog, setViewJustificationDialog] = useState<{
+        open: boolean;
+        studentName: string;
+        studentId?: string;
+        date: string;
+        status: string;
+        justification: string;
+        linkUrl?: string | null;
+    } | null>(null);
+
+    const loadGroupPlans = async (gId?: string) => {
+        const id = gId || selectedGroupId;
+        if (!id) return;
+        setGroupPlansLoading(true);
+        try {
+            const res = await getGroupImprovementPlans(id);
+            if (res.success && res.data) setGroupPlans(res.data);
+        } catch (e) {
+            console.error("Error cargando planes del grupo:", e);
+        } finally {
+            setGroupPlansLoading(false);
+        }
+    };
+
+    const handleImpUpsert = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!impPlanFormDialog) return;
+        if (!impPlanFormDialog.studentId || !impPlanFormDialog.planNumber.trim() || !impPlanFormDialog.startDate || !impPlanFormDialog.endDate) {
+            toast.error("Por favor completa los campos requeridos (*)");
+            return;
+        }
+        const toastId = toast.loading("Guardando plan...");
+        const res = await upsertImprovementPlan({
+            id: impPlanFormDialog.id,
+            planNumber: impPlanFormDialog.planNumber.trim(),
+            studentId: impPlanFormDialog.studentId,
+            teacherDocUrl: impPlanFormDialog.teacherDocUrl.trim() || undefined,
+            startDate: impPlanFormDialog.startDate,
+            endDate: impPlanFormDialog.endDate,
+            observations: impPlanFormDialog.observations.trim() || undefined,
+            planScore: impPlanFormDialog.planScore !== "" ? parseFloat(String(impPlanFormDialog.planScore)) : undefined,
+            finalGrade: impPlanFormDialog.finalGrade !== "" ? parseFloat(String(impPlanFormDialog.finalGrade)) : undefined,
+            evidenceUrl: impPlanFormDialog.evidenceUrl.trim() || undefined,
+        });
+        if (res.success) {
+            toast.success("Plan guardado exitosamente", { id: toastId });
+            setImpPlanFormDialog(null);
+            loadGroupPlans();
+        } else {
+            toast.error(res.error || "Error al guardar el plan", { id: toastId });
+        }
+    };
+
+    const handleImpDelete = async (planId: string) => {
+        const toastId = toast.loading("Eliminando plan...");
+        const res = await deleteImprovementPlan(planId);
+        if (res.success) {
+            toast.success("Plan eliminado correctamente", { id: toastId });
+            setImpDeleteConfirm(null);
+            loadGroupPlans();
+        } else {
+            toast.error(res.error || "Error al eliminar", { id: toastId });
+        }
+    };
+
+    const handleImpDeleteSignedDoc = async (planId: string) => {
+        const toastId = toast.loading("Eliminando documento firmado...");
+        const res = await deleteSignedDocument(planId);
+        if (res.success) {
+            toast.success("Documento eliminado correctamente", { id: toastId });
+            loadGroupPlans();
+        } else {
+            toast.error(res.error || "Error al eliminar el documento", { id: toastId });
+        }
+    };
+
+    const handleImpDeleteTeacherSignedDoc = async (planId: string) => {
+        const toastId = toast.loading("Eliminando contrafirma del instructor...");
+        const res = await deleteTeacherSignedDoc(planId);
+        if (res.success) {
+            toast.success("Contrafirma eliminada correctamente", { id: toastId });
+            loadGroupPlans();
+        } else {
+            toast.error(res.error || "Error al eliminar", { id: toastId });
+        }
+    };
+
+    const handleImpTeacherSign = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!impTeacherSignDialog || !impTeacherSignDialog.url.trim()) {
+            toast.error("El enlace no puede estar vacío");
+            return;
+        }
+        const toastId = toast.loading("Guardando contrafirma...");
+        const res = await submitTeacherSignedDoc(impTeacherSignDialog.planId, impTeacherSignDialog.url.trim());
+        if (res.success) {
+            toast.success("Contrafirma guardada exitosamente", { id: toastId });
+            setImpTeacherSignDialog(null);
+            loadGroupPlans();
+        } else {
+            toast.error(res.error || "Error al guardar", { id: toastId });
+        }
+    };
+    const handleResetPlanSubmit = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!resetPlanDialog) return;
+        if (resetPlanDialog.stepNumber < 1 || resetPlanDialog.stepNumber > 5) {
+            toast.error("Paso inválido");
+            return;
+        }
+
+        const toastId = toast.loading("Restableciendo plan...");
+        const res = await resetPlanToStep(
+            resetPlanDialog.planId,
+            resetPlanDialog.stepNumber,
+            resetPlanDialog.reason.trim() || undefined
+        );
+        if (res.success) {
+            toast.success("Plan devuelto correctamente y aprendiz notificado", { id: toastId });
+            setResetPlanDialog(null);
+            loadGroupPlans();
+        } else {
+            toast.error(res.error || "Error al devolver el plan", { id: toastId });
+        }
+    };
+    const handleGradePlanSubmit = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!gradePlanDialog) return;
+        const gradeVal = parseFloat(gradePlanDialog.grade);
+        if (isNaN(gradeVal) || gradeVal < 0 || gradeVal > 5) {
+            toast.error("La calificación debe ser un número entre 0 y 5.0");
+            return;
+        }
+
+        const toastId = toast.loading("Registrando calificación...");
+        const res = await gradeImprovementPlan(gradePlanDialog.planId, gradeVal);
+        if (res.success) {
+            toast.success("Calificación asignada con éxito", { id: toastId });
+            setGradePlanDialog(null);
+            loadGroupPlans();
+        } else {
+            toast.error(res.error || "Error al calificar el plan", { id: toastId });
+        }
+    };
+
+    const handleImpEmail = (plan: any) => {
+        const studentEmail = plan.student?.email || "";
+        const studentName = formatName(plan.student?.name, plan.student?.profile);
+        const teacherName = formatName(plan.teacher?.name, plan.teacher?.profile);
+        const subject = encodeURIComponent(`Plan de Mejoramiento Académico - ${plan.planNumber}`);
+        let bodyText = `Hola, ${studentName}.\n\n`;
+        bodyText += `Se ha registrado el Plan de Mejoramiento Académico N° ${plan.planNumber} en la plataforma AcademiX.\n\n`;
+        bodyText += `Detalles del Plan:\n`;
+        bodyText += `- Fecha de Inicio: ${format(new Date(plan.startDate), "dd/MM/yyyy")}\n`;
+        bodyText += `- Fecha de Finalización: ${format(new Date(plan.endDate), "dd/MM/yyyy")}\n`;
+        bodyText += `- Instructor: ${teacherName}\n`;
+        if (plan.teacherDocUrl) bodyText += `- Documento del Plan: ${plan.teacherDocUrl}\n`;
+        if (plan.observations) bodyText += `- Observaciones/Criterios: ${plan.observations}\n`;
+        bodyText += `\nPor favor ingresa a la plataforma AcademiX para revisar el plan en detalle, firmarlo y cargar el documento firmado.\n\nAtentamente,\n${teacherName}`;
+        window.location.href = `mailto:${studentEmail}?subject=${subject}&body=${encodeURIComponent(bodyText)}`;
+        // Notify student via push
+        notifyEmailSentBatchAction([plan.studentId], "PLAN");
+    };
+
+    useEffect(() => {
+        if (activeTab === "improvement" && selectedGroupId) {
+            loadGroupPlans(selectedGroupId);
+        }
+    }, [activeTab, selectedGroupId]);
+
+    // Attendance Tab State
+    const [attMode, setAttMode] = useState<"list" | "matrix" | "summary" | "history" | "metrics">("list");
+    const printMetricsRef = useRef<HTMLDivElement>(null);
+    const matrixRef = useRef<HTMLDivElement>(null);
+    const historyRef = useRef<HTMLDivElement>(null);
+    const [isSequentialFullscreen, setIsSequentialFullscreen] = useState(false);
+    const [mounted, setMounted] = useState(false);
+    useEffect(() => {
+        setMounted(true);
+    }, []);
+    const [seqIndex, setSeqIndex] = useState(0);
+    const [attDate, setAttDate] = useState<string>(getTodayColombianDate());
+    const [attCourseId, setAttCourseId] = useState<string>("");
+    // We only store ABSENT or LATE in attRecords. If a student is not here, they are PRESENT.
+    const [attRecords, setAttRecords] = useState<Record<string, { status: "PRESENT" | "ABSENT" | "LATE" | "LEAVE_EARLY", arrivalTime?: string, departureTime?: string, justification?: string }>>({});
+
+    // Opciones dinámicas de horario calculadas estrictamente según la programación del grupo/materia para el día seleccionado
+    const currentSessionTimeOptions = useMemo(() => {
+        if (!selectedGroup || !attCourseId || !attDate) {
+            return {
+                sessionStart: "08:00",
+                sessionEnd: "12:00",
+                dayOfWeekStr: "MONDAY",
+                scheduleFound: false,
+                startM: 480,
+                endM: 720,
+                lateOptions: [] as string[],
+                leaveOptions: [] as string[]
+            };
+        }
+        const { sessionStart, sessionEnd, dayOfWeekStr, scheduleFound } = getSessionScheduleForDay(selectedGroup, attCourseId, attDate);
+        const { startM, endM, lateOptions, leaveOptions } = getSessionTimeOptions(sessionStart, sessionEnd);
+        return {
+            sessionStart,
+            sessionEnd,
+            dayOfWeekStr,
+            scheduleFound,
+            startM,
+            endM,
+            lateOptions,
+            leaveOptions
+        };
+    }, [selectedGroup, attCourseId, attDate]);
+    const [isSavingAtt, setIsSavingAtt] = useState(false);
+    const [isLoadingAttendance, setIsLoadingAttendance] = useState<boolean>(true);
+    const [selectedDayFilter, setSelectedDayFilter] = useState<number | null>(null);
+    const [historyStudentFilter, setHistoryStudentFilter] = useState<string>("all");
+    const [historyScheduleScope, setHistoryScheduleScope] = useState<"current" | "previous" | "all">("all");
+    const [detailScheduleScope, setDetailScheduleScope] = useState<"current" | "previous" | "all">("all");
+
+    const isRecordInCurrentSchedule = (rec: any, targetCourseId?: string) => {
+        if (!rec || !rec.date) return true;
+        const cId = targetCourseId || rec.courseId || attCourseId;
+        const { start: effectiveStart, end: effectiveEnd } = getEffectiveDatesForCourse(selectedGroup, cId);
+
+        if (!effectiveStart && !effectiveEnd) return true;
+
+        const recYMD = toCalendarYMD(rec.date);
+        if (!recYMD) return true;
+
+        const startYMD = effectiveStart ? toCalendarYMD(effectiveStart) : "";
+        const endYMD = effectiveEnd ? toCalendarYMD(effectiveEnd) : "";
+
+        if (startYMD && recYMD < startYMD) {
+            return false;
+        }
+        if (endYMD && recYMD > endYMD) {
+            return false;
+        }
+        return true;
+    };
+    const [attendanceToDelete, setAttendanceToDelete] = useState<{ studentId: string; studentName: string; date: string } | null>(null);
+    const [isHelpModalOpen, setIsHelpModalOpen] = useState(false);
+
+    const [banRequestDialogOpen, setBanRequestDialogOpen] = useState(false);
+    const [studentToBan, setStudentToBan] = useState<any | null>(null);
+    const [banReasonText, setBanReasonText] = useState("");
+    const [isSendingBanReq, setIsSendingBanReq] = useState(false);
+
+    const handleSendGroupBanRequest = async () => {
+        if (!studentToBan || !banReasonText.trim()) {
+            toast.error("Ingresa la justificación de la solicitud de baneo.");
+            return;
+        }
+        setIsSendingBanReq(true);
+        try {
+            const { requestStudentBanAction } = await import("@/features/teacher/actions/studentActions");
+            const res = await requestStudentBanAction({
+                studentId: studentToBan.id,
+                reason: banReasonText,
+                courseId: attCourseId || undefined
+            });
+            if (res.success) {
+                toast.success(res.message);
+                setBanRequestDialogOpen(false);
+                setStudentToBan(null);
+                setBanReasonText("");
+            } else {
+                toast.error("Error al enviar la solicitud.");
+            }
+        } catch (e: any) {
+            toast.error(e.message || "Error al conectar con el servidor.");
+        } finally {
+            setIsSendingBanReq(false);
+        }
+    };
+
+    const [isDateLocked, setIsDateLocked] = useState<boolean>(false);
+    const [hasEditPermission, setHasEditPermission] = useState<boolean>(true);
+    const [limitSettingsActive, setLimitSettingsActive] = useState<boolean>(false);
+    const [permissionRequestStatus, setPermissionRequestStatus] = useState<"PENDING" | "APPROVED" | "REJECTED" | null>(null);
+    const [permissionReason, setPermissionReason] = useState<string | null>(null);
+    const [requestingPermissionReason, setRequestingPermissionReason] = useState<string>("");
+    const [isRequestingPermission, setIsRequestingPermission] = useState<boolean>(false);
+
+    const checkEditPermission = async () => {
+        if (!attCourseId || !attDate) return;
+        const { getAttendanceEditPermissionStatusAction } = await import("../actions/groupActions");
+        const res = await getAttendanceEditPermissionStatusAction(attCourseId, attDate);
+        if (res.success) {
+            setIsDateLocked(res.isLocked || false);
+            setHasEditPermission(res.hasPermission || false);
+            setPermissionRequestStatus(res.requestStatus as any);
+            setPermissionReason(res.reason as any);
+            setLimitSettingsActive(res.limitSettingsActive || false);
+        }
+    };
+
+    useEffect(() => {
+        checkEditPermission();
+    }, [attDate, attCourseId]);
+
+    // Remarks Tab State
+    const [remarkType, setRemarkType] = useState<"ATTENTION" | "COMMENDATION" | "CITATION" | "OTHER">("ATTENTION");
+    const [remarkTitle, setRemarkTitle] = useState("");
+    const [remarkDesc, setRemarkDesc] = useState("");
+    const [remarkCourseId, setRemarkCourseId] = useState("");
+    const [isSavingRemark, setIsSavingRemark] = useState(false);
+    const [remarkStudentSearch, setRemarkStudentSearch] = useState("");
+    const [selectedRemarkStudentId, setSelectedRemarkStudentId] = useState<string | null>(null);
+    const [sendEmailOnSave, setSendEmailOnSave] = useState(false);
+
+    // Remarks Message Templates State
+    const [remarkTemplates, setRemarkTemplates] = useState<any[]>([]);
+    const [selectedTemplateId, setSelectedTemplateId] = useState("");
+    const [templateCustomValues, setTemplateCustomValues] = useState<Record<string, string>>({});
+
+    const [confirmConfig, setConfirmConfig] = useState<{
+        open: boolean;
+        title: string;
+        description: string;
+        onConfirm: () => void | Promise<void>;
+    } | null>(null);
+
+    const requestConfirm = (title: string, description: string, onConfirm: () => void | Promise<void>) => {
+        setConfirmConfig({
+            open: true,
+            title,
+            description,
+            onConfirm,
+        });
+    };
+
+
+    const fetchTemplates = async () => {
+        try {
+            const res = await getRemarkTemplatesAction();
+            setRemarkTemplates(res);
+        } catch (err) {
+            console.error("Error al cargar plantillas:", err);
+        }
+    };
+
+    useEffect(() => {
+        fetchTemplates();
+    }, []);
+
+    useEffect(() => {
+        setSelectedTemplateId("");
+        setTemplateCustomValues({});
+    }, [remarkType, selectedGroupId]);
+
+    const selectedTemplate = useMemo(() => {
+        if (!selectedTemplateId) return null;
+        return remarkTemplates.find((t: any) => t.id === selectedTemplateId) || null;
+    }, [selectedTemplateId, remarkTemplates]);
+
+    const templateCustomVariables: CustomVariableDefinition[] = useMemo(() => {
+        if (!selectedTemplate || !selectedTemplate.customVariables) return [];
+        if (Array.isArray(selectedTemplate.customVariables)) return selectedTemplate.customVariables as CustomVariableDefinition[];
+        return [];
+    }, [selectedTemplate]);
+
+    const selectedRemarkStudent = useMemo(() => {
+        if (!selectedRemarkStudentId || !selectedGroup?.students) return null;
+        return selectedGroup.students.find((s: any) => s.id === selectedRemarkStudentId) || null;
+    }, [selectedRemarkStudentId, selectedGroup]);
+
+    const getParsedDescription = (customStudent?: any) => {
+        const student = customStudent || selectedRemarkStudent;
+        return interpolateRemarkTemplate(remarkDesc, {
+            student,
+            group: selectedGroup,
+            teacherName: teacherName || "",
+            currentDate: new Date(),
+            useSampleValues: !student,
+            customVariables: templateCustomVariables,
+            customValues: templateCustomValues
+        });
+    };
+
+    const getParsedTitle = (customStudent?: any) => {
+        const student = customStudent || selectedRemarkStudent;
+        return interpolateRemarkTemplate(remarkTitle || "Observación Académica/Disciplinaria", {
+            student,
+            group: selectedGroup,
+            teacherName: teacherName || "",
+            currentDate: new Date(),
+            useSampleValues: !student,
+            customVariables: templateCustomVariables,
+            customValues: templateCustomValues
+        });
+    };
+
+    const handleCopyToClipboard = async () => {
+        const textToCopy = getParsedDescription();
+        if (!textToCopy.trim()) {
+            toast.error("La descripción está vacía.");
+            return;
+        }
+        try {
+            await navigator.clipboard.writeText(textToCopy);
+            toast.success("Texto copiado al portapapeles" + (selectedRemarkStudent ? " con los datos del aprendiz." : "."));
+        } catch (err) {
+            console.error("Error al copiar al portapapeles:", err);
+            toast.error("No se pudo copiar el texto. Inténtalo de nuevo.");
+        }
+    };
+
+
+    // History State
+    const [attendanceHistory, setAttendanceHistory] = useState<any[]>([]);
+    const [remarksHistory, setRemarksHistory] = useState<any[]>([]);
+
+    // Details Modal State
+    const [detailStudent, setDetailStudent] = useState<any | null>(null);
+    const [detailOpen, setDetailOpen] = useState(false);
+    const [detailMateriaFilter, setDetailMateriaFilter] = useState<"current" | "all">("current");
+
+    const handleShowStudentDetails = (student: any) => {
+        setDetailStudent(student);
+        setDetailScheduleScope("all");
+        setDetailMateriaFilter("current");
+        setDetailOpen(true);
+    };
+
+    // Unsaved Changes Warning State & Logic
+    const [initialAttRecords, setInitialAttRecords] = useState<Record<string, any>>({});
+    const [pendingAction, setPendingAction] = useState<{
+        type: "DATE" | "COURSE" | "TAB" | "GROUP";
+        value: string;
+    } | null>(null);
+
+    const hasPendingChanges = () => false;
+
+    const confirmPendingAction = () => {
+        if (!pendingAction) return;
+        const { type, value } = pendingAction;
+        
+        // Temporarily align them so hasPendingChanges returns false during state updates
+        setInitialAttRecords(attRecords);
+        
+        if (type === "DATE") {
+            setAttDate(value);
+        } else if (type === "COURSE") {
+            setAttCourseId(value);
+            setAttDate(getTodayColombianDate());
+        } else if (type === "TAB") {
+            setActiveTab(value as any);
+        } else if (type === "GROUP") {
+            setSelectedGroupId(value);
+        }
+        setPendingAction(null);
+    };
+
+    const saveAndConfirmPendingAction = async () => {
+        if (isDateLocked && !hasEditPermission) {
+            toast.error("Esta fecha pertenece a una semana anterior y está bloqueada.");
+            return;
+        }
+        if (!pendingAction || !attCourseId || !attDate) return;
+        
+        const recordsArray = filteredStudents
+            .filter((s: any) => attRecords[s.id]?.status && (attRecords[s.id]?.status as string) !== "UNMARKED")
+            .map((s: any) => {
+                const rec = attRecords[s.id];
+                return {
+                    studentId: s.id,
+                    status: rec.status,
+                    arrivalTime: rec?.arrivalTime || undefined,
+                    departureTime: rec?.departureTime || undefined,
+                    justification: rec?.justification || undefined
+                };
+            });
+
+        const toastId = toast.loading("Guardando cambios y continuando...");
+        try {
+            const res = await saveAttendanceBatch(attCourseId, attDate, recordsArray);
+            if (res.success) {
+                toast.success("Asistencia guardada correctamente", { id: toastId });
+                
+                const { type, value } = pendingAction;
+                setInitialAttRecords(attRecords);
+                
+                if (type === "DATE") {
+                    setAttDate(value);
+                } else if (type === "COURSE") {
+                    setAttCourseId(value);
+                    setAttDate(getTodayColombianDate());
+                } else if (type === "TAB") {
+                    setActiveTab(value as any);
+                } else if (type === "GROUP") {
+                    setSelectedGroupId(value);
+                }
+                
+                if (type !== "GROUP" && selectedGroup) {
+                    await loadHistory(selectedGroup.id);
+                }
+            } else {
+                toast.error("Error al guardar asistencia: " + res.error, { id: toastId });
+            }
+        } catch (e: any) {
+            toast.error("Error de conexión al guardar cambios", { id: toastId });
+        } finally {
+            setPendingAction(null);
+        }
+    };
+
+    const handleDateChangeAttempt = (newVal: string) => {
+        if (isSavingAtt) return;
+        if (hasPendingChanges()) {
+            setPendingAction({ type: "DATE", value: newVal });
+        } else {
+            setAttDate(newVal);
+        }
+    };
+
+    const handleCourseChangeAttempt = (newVal: string) => {
+        if (isSavingAtt) return;
+        if (hasPendingChanges()) {
+            setPendingAction({ type: "COURSE", value: newVal });
+        } else {
+            setAttCourseId(newVal);
+            setAttDate(getTodayColombianDate());
+        }
+    };
+
+    const handleTabChangeAttempt = (newVal: string) => {
+        if (isSavingAtt) return;
+        if (hasPendingChanges()) {
+            setPendingAction({ type: "TAB", value: newVal });
+        } else {
+            setActiveTab(newVal as any);
+        }
+    };
+
+    const handleGroupChangeAttempt = (newVal: string) => {
+        if (isSavingAtt) return;
+        if (hasPendingChanges()) {
+            setPendingAction({ type: "GROUP", value: newVal });
+        } else {
+            setSelectedGroupId(newVal);
+        }
+    };
+
+    useEffect(() => {
+        const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+            if (hasPendingChanges()) {
+                e.preventDefault();
+                e.returnValue = "";
+            }
+        };
+        window.addEventListener("beforeunload", handleBeforeUnload);
+        return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+    }, [attRecords, initialAttRecords]);
+
+    // Analytics Modal State
+    const [showAnalyticsModal, setShowAnalyticsModal] = useState(false);
+    const [fullAnalyticsData, setFullAnalyticsData] = useState<any>(null);
+    const [loadingAnalytics, setLoadingAnalytics] = useState(false);
+
+
+    useEffect(() => {
+        if (selectedGroup) {
+            const firstCourseId = selectedGroup.courses?.[0]?.id || "";
+
+            // Reset search & student selections when group changes (preserve activeTab)
+            setSearchQuery("");
+            setSelectedStudents([]);
+            setSelectedStudentForAnalytics(null);
+
+            // Attendance
+            setAttMode("list");
+            setAttCourseId(firstCourseId);
+            setAttDate(getTodayColombianDate());
+            setAttRecords({});
+            setSeqIndex(0);
+            setSelectedDayFilter(null);
+
+            // Remarks
+            setRemarkType("ATTENTION");
+            setRemarkTitle("");
+            setRemarkDesc("");
+            setSelectedRemarkStudentId(null);
+            setRemarkCourseId(firstCourseId);
+            setSendEmailOnSave(false);
+
+            // History & analytics
+            setAttendanceHistory([]);
+            setRemarksHistory([]);
+            setFullAnalyticsData(null);
+            setShowAnalyticsModal(false);
+            setDetailStudent(null);
+            setDetailOpen(false);
+
+            // Load fresh history for the new group
+            setIsLoadingAttendance(true);
+            loadHistory(selectedGroup.id);
+        }
+    }, [selectedGroup?.id]);
+
+    useEffect(() => {
+        if (activeTab === "analytics" && selectedGroup && !loadingAnalytics) {
+            handleOpenAnalytics();
+        }
+    }, [activeTab, selectedGroup?.id]);
+
+
+
+    const loadHistory = async (groupId: string) => {
+        setIsLoadingAttendance(true);
+        try {
+            const att = await getGroupAttendanceHistory(groupId);
+            const rem = await getGroupRemarksHistory(groupId);
+            setAttendanceHistory(att);
+            setRemarksHistory(rem);
+        } catch (error) {
+            console.error("Error al cargar historial:", error);
+        } finally {
+            setIsLoadingAttendance(false);
+        }
+    };
+
+    
+    // Sincronizar attRecords con attendanceHistory al cambiar fecha o materia
+    useEffect(() => {
+        if (!attCourseId || !attDate) {
+            setAttRecords({});
+            return;
+        }
+        
+        const recordsForDateAndCourse = attendanceHistory.filter((a: any) => {
+            if (a.courseId !== attCourseId) return false;
+            // a.date might be a string or a Date object
+            const aDate = new Date(a.date);
+            const aDateString = aDate.toISOString().split('T')[0];
+            return aDateString === attDate;
+        });
+
+        const newRecords: Record<string, any> = {};
+        recordsForDateAndCourse.forEach((rec: any) => {
+            // Keep PRESENT status in state so the card style stays green
+            newRecords[rec.userId] = {
+                status: rec.status,
+                arrivalTime: extractTimeHHmm(rec.arrivalTime) || undefined,
+                departureTime: extractTimeHHmm(rec.departureTime) || undefined,
+                justification: rec.justification || undefined
+            };
+        });
+        
+        setAttRecords(newRecords);
+        setInitialAttRecords(newRecords);
+    }, [attDate, attCourseId, attendanceHistory]);
+const handleOpenAnalytics = async () => {
+        if (!selectedGroup) return;
+        setShowAnalyticsModal(true);
+        setLoadingAnalytics(true);
+        try {
+            const data = await getTeacherComprehensiveGroupAnalyticsAction(selectedGroup.id);
+            setFullAnalyticsData(data);
+        } catch (error) {
+            toast.error("Error al cargar la analítica");
+            setShowAnalyticsModal(false);
+        } finally {
+            setLoadingAnalytics(false);
+        }
+    };
+
+    useEffect(() => {
+        if (typeof window !== 'undefined') {
+            const searchParams = new URLSearchParams(window.location.search);
+            const groupParam = searchParams.get('group');
+            if (groupParam && groups.some((g: any) => g.id === groupParam)) {
+                setSelectedGroupId(groupParam);
+            }
+        }
+    }, [groups]);
+
+    const hasInitGroupParamRef = useRef(false);
+    useAppRefresh(async () => {
+        const tasks: Promise<unknown>[] = [fetchTemplates(), checkEditPermission()];
+        if (selectedGroupId) {
+            tasks.push(loadHistory(selectedGroupId));
+            if (activeTab === "improvement") {
+                tasks.push(loadGroupPlans(selectedGroupId));
+            }
+            if (activeTab === "analytics") {
+                tasks.push(handleOpenAnalytics());
+            }
+        }
+        await Promise.allSettled(tasks);
+    });
+    const filteredStudents = useMemo(() => {
+        if (!selectedGroup?.students) return [];
+        let list = selectedGroup.students.filter((s: any) => !s.banned);
+        if (searchQuery) {
+            const q = searchQuery.toLowerCase();
+            list = list.filter((s: any) => 
+                s.name.toLowerCase().includes(q) || 
+                s.email.toLowerCase().includes(q) ||
+                s.profile?.identificacion?.toLowerCase().includes(q)
+            );
+        }
+        return [...list].sort((a: any, b: any) => a.name.localeCompare(b.name));
+    }, [selectedGroup, searchQuery]);
+
+    const studentAttendanceStats = useMemo(() => {
+        const stats: Record<string, { 
+            absentCount: number; 
+            lateCount: number; 
+            leaveCount: number;
+            allTimeAbsentCount: number;
+            allTimeLateCount: number;
+            allTimeLeaveCount: number;
+        }> = {};
+        if (!attendanceHistory || attendanceHistory.length === 0 || !attCourseId) return stats;
+
+        for (let i = 0; i < attendanceHistory.length; i++) {
+            const a = attendanceHistory[i];
+            if (a.courseId !== attCourseId) continue;
+            const uid = a.userId;
+            let entry = stats[uid];
+            if (!entry) {
+                entry = { 
+                    absentCount: 0, 
+                    lateCount: 0, 
+                    leaveCount: 0,
+                    allTimeAbsentCount: 0,
+                    allTimeLateCount: 0,
+                    allTimeLeaveCount: 0
+                };
+                stats[uid] = entry;
+            }
+
+            // Totales acumulados históricos
+            if (a.status === 'ABSENT') {
+                entry.allTimeAbsentCount++;
+            }
+            if (a.status === 'LATE' || !!a.arrivalTime) {
+                entry.allTimeLateCount++;
+            }
+            if (a.status === 'LEAVE_EARLY' || !!a.departureTime) {
+                entry.allTimeLeaveCount++;
+            }
+
+            // Conteo correspondiente únicamente al rango de inicio y fin del horario actual
+            if (isRecordInCurrentSchedule(a, attCourseId)) {
+                if (a.status === 'ABSENT') {
+                    entry.absentCount++;
+                }
+                if (a.status === 'LATE' || !!a.arrivalTime) {
+                    entry.lateCount++;
+                }
+                if (a.status === 'LEAVE_EARLY' || !!a.departureTime) {
+                    entry.leaveCount++;
+                }
+            }
+        }
+        return stats;
+    }, [attendanceHistory, attCourseId, selectedGroup, scheduleStartDate, scheduleEndDate]);
+
+    const filteredStudentsForRemark = useMemo(() => {
+        if (!selectedGroup?.students) return [];
+        let list = selectedGroup.students.filter((s: any) => !s.banned);
+        if (remarkStudentSearch) {
+            const q = remarkStudentSearch.toLowerCase();
+            list = list.filter((s: any) => 
+                s.name.toLowerCase().includes(q) || 
+                s.profile?.identificacion?.toLowerCase().includes(q)
+            );
+        }
+        return [...list].sort((a: any, b: any) => a.name.localeCompare(b.name));
+    }, [selectedGroup, remarkStudentSearch]);
+
+    const isCurrentDateValid = useMemo(() => {
+        if (!attDate || !attCourseId) return true;
+        return isDateValidForAttendance(attDate, attCourseId);
+    }, [attDate, attCourseId, selectedGroupId]);
+
+    const otherGroupsWithClassToday = useMemo(() => {
+        const todayStr = getTodayColombianDate();
+        return groups.filter((g: any) =>
+            g.id !== selectedGroupId &&
+            g.courses?.some((c: any) => isDateValidForGroupAndCourse(g, todayStr, c.id))
+        );
+    }, [groups, selectedGroupId]);
+
+    const remarksByStudent = useMemo(() => {
+        const grouped: Record<string, { student: any; remarks: any[] }> = {};
+        remarksHistory.forEach((rem: any) => {
+            const studentId = rem.userId;
+            if (!grouped[studentId]) {
+                grouped[studentId] = {
+                    student: rem.user,
+                    remarks: []
+                };
+            }
+            grouped[studentId].remarks.push(rem);
+        });
+        return Object.values(grouped);
+    }, [remarksHistory]);
+
+    const filteredTemplates = useMemo(() => {
+        return remarkTemplates.filter((t) => t.type === remarkType);
+    }, [remarkTemplates, remarkType]);
+
+    const handleResetPassword = async () => {
+        if (!studentToResetPassword) return;
+        setIsResetting(true);
+        try {
+            const res = await resetStudentPassword(studentToResetPassword.id);
+            if (res.success) {
+                toast.success("Contraseña restablecida exitosamente al documento de identidad.");
+                setResetPasswordDialogOpen(false);
+                setStudentToResetPassword(null);
+            } else {
+                toast.error("Error al restablecer la contraseña: " + res.error);
+            }
+        } catch (e: any) {
+            toast.error("Error de conexión");
+        } finally {
+            setIsResetting(false);
+        }
+    };
+
+    const toggleStudentSelection = (studentId: string) => {
+        setSelectedStudents(prev => 
+            prev.includes(studentId) ? prev.filter(id => id !== studentId) : [...prev, studentId]
+        );
+    };
+
+    const toggleAllStudents = () => {
+        if (selectedStudents.length === filteredStudents.length) {
+            setSelectedStudents([]);
+        } else {
+            setSelectedStudents(filteredStudents.map((s: any) => s.id));
+        }
+    };
+
+    const setStudentAttendance = async (studentId: string, status: "PRESENT" | "ABSENT" | "UNMARKED") => {
+        if (isDateLocked && !hasEditPermission) {
+            toast.error("Esta fecha pertenece a una semana anterior y está bloqueada.");
+            return;
+        }
+        if (!attCourseId) return toast.error("Selecciona una materia");
+
+        const prevRecord = attRecords[studentId];
+
+        // Optimistic UI update
+        setAttRecords(prev => {
+            const newRecords = { ...prev };
+            if (status === "UNMARKED") {
+                delete newRecords[studentId];
+            } else {
+                newRecords[studentId] = { 
+                    status: status, 
+                    arrivalTime: undefined,
+                    departureTime: undefined
+                };
+            }
+            return newRecords;
+        });
+
+        try {
+            const res = await saveSingleAttendanceAction(
+                attCourseId,
+                studentId,
+                attDate,
+                status,
+                undefined,
+                undefined,
+                undefined
+            );
+            if (res.success) {
+                setAttendanceHistory(prev => {
+                    const filtered = prev.filter((a: any) => !(a.courseId === attCourseId && a.userId === studentId && new Date(a.date).toISOString().split('T')[0] === attDate));
+                    return status === "UNMARKED" || !res.record ? filtered : [res.record, ...filtered];
+                });
+            } else {
+                toast.error("Error al registrar asistencia: " + res.error);
+                setAttRecords(prev => {
+                    const newRecords = { ...prev };
+                    if (prevRecord) {
+                        newRecords[studentId] = prevRecord;
+                    } else {
+                        delete newRecords[studentId];
+                    }
+                    return newRecords;
+                });
+            }
+        } catch (e) {
+            toast.error("Error de red al guardar asistencia");
+            setAttRecords(prev => {
+                const newRecords = { ...prev };
+                if (prevRecord) {
+                    newRecords[studentId] = prevRecord;
+                } else {
+                    delete newRecords[studentId];
+                }
+                return newRecords;
+            });
+        }
+    };
+
+    const toggleLateOrLeaveEarly = async (studentId: string, type: "LATE" | "LEAVE_EARLY") => {
+        if (isDateLocked && !hasEditPermission) {
+            toast.error("Esta fecha pertenece a una semana anterior y está bloqueada.");
+            return;
+        }
+        if (!attCourseId) return toast.error("Selecciona una materia");
+
+        // Obtener horario programado de la materia o grupo para la fecha seleccionada
+        const { sessionStart, sessionEnd } = getSessionScheduleForDay(selectedGroup, attCourseId, attDate);
+        const { startM: startMins, endM: endMins } = getSessionTimeOptions(sessionStart, sessionEnd);
+
+        const now = new Date();
+        const currentHour = now.getHours();
+        const currentMin = now.getMinutes();
+        const totalMins = currentHour * 60 + currentMin;
+        const isToday = attDate === getTodayColombianDate();
+
+        let defaultLateTime: string;
+        let defaultLeaveTime: string;
+
+        if (isToday && totalMins > startMins && totalMins < endMins) {
+            // Durante la clase en vivo: redondear al múltiplo de 15 minutos más cercano
+            const rounded = Math.round(totalMins / 15) * 15;
+            const clampedLate = Math.min(Math.max(rounded, startMins + 15), endMins);
+            const clampedLeave = Math.max(Math.min(rounded, endMins - 15), startMins);
+            defaultLateTime = `${Math.floor(clampedLate / 60).toString().padStart(2, "0")}:${(clampedLate % 60).toString().padStart(2, "0")}`;
+            defaultLeaveTime = `${Math.floor(clampedLeave / 60).toString().padStart(2, "0")}:${(clampedLeave % 60).toString().padStart(2, "0")}`;
+        } else {
+            // Fuera de clase o fecha distinta:
+            // Tarde: 15 minutos después del inicio de clase
+            const lateSlot = Math.min(startMins + 15, endMins);
+            defaultLateTime = `${Math.floor(lateSlot / 60).toString().padStart(2, "0")}:${(lateSlot % 60).toString().padStart(2, "0")}`;
+            // Retiro: 1 hora antes de finalizar (o 15 min antes si clase corta)
+            const leaveSlot = Math.max(startMins, endMins - 60);
+            defaultLeaveTime = `${Math.floor(leaveSlot / 60).toString().padStart(2, "0")}:${(leaveSlot % 60).toString().padStart(2, "0")}`;
+        }
+
+        const prevRecord = attRecords[studentId];
+        const hasLate = !!prevRecord?.arrivalTime || prevRecord?.status === "LATE";
+        const hasLeaveEarly = !!prevRecord?.departureTime || prevRecord?.status === "LEAVE_EARLY";
+
+        let newArrivalTime = prevRecord?.arrivalTime;
+        let newDepartureTime = prevRecord?.departureTime;
+
+        if (type === "LATE") {
+            if (hasLate) {
+                newArrivalTime = undefined;
+            } else {
+                // Si la hora previa está fuera de la franja programada para el día, reemplazarla por defaultLateTime
+                const prevM = prevRecord?.arrivalTime ? (() => {
+                    const [h, m] = prevRecord.arrivalTime.split(":").map(Number);
+                    return isNaN(h) ? -1 : h * 60 + (m || 0);
+                })() : -1;
+                const isPrevValid = prevM >= (startMins + 15) && prevM <= endMins;
+                newArrivalTime = isPrevValid ? prevRecord?.arrivalTime : defaultLateTime;
+            }
+        } else if (type === "LEAVE_EARLY") {
+            if (hasLeaveEarly) {
+                newDepartureTime = undefined;
+            } else {
+                // Si la hora previa está fuera de la franja programada para el día, reemplazarla por defaultLeaveTime
+                const prevM = prevRecord?.departureTime ? (() => {
+                    const [h, m] = prevRecord.departureTime.split(":").map(Number);
+                    return isNaN(h) ? -1 : h * 60 + (m || 0);
+                })() : -1;
+                const isPrevValid = prevM >= startMins && prevM <= (endMins - 15);
+                newDepartureTime = isPrevValid ? prevRecord?.departureTime : defaultLeaveTime;
+            }
+        }
+
+        let newStatus: "PRESENT" | "ABSENT" | "LATE" | "LEAVE_EARLY" | "UNMARKED" = "UNMARKED";
+        if (newArrivalTime && newDepartureTime) {
+            newStatus = "LATE";
+        } else if (newArrivalTime) {
+            newStatus = "LATE";
+        } else if (newDepartureTime) {
+            newStatus = "LEAVE_EARLY";
+        } else {
+            newStatus = "UNMARKED";
+        }
+
+        // Optimistic UI update
+        setAttRecords(prev => {
+            const newRecords = { ...prev };
+            if (newStatus === "UNMARKED") {
+                delete newRecords[studentId];
+            } else {
+                newRecords[studentId] = {
+                    status: newStatus,
+                    arrivalTime: newArrivalTime,
+                    departureTime: newDepartureTime
+                };
+            }
+            return newRecords;
+        });
+
+        try {
+            const res = await saveSingleAttendanceAction(
+                attCourseId,
+                studentId,
+                attDate,
+                newStatus,
+                undefined,
+                newArrivalTime,
+                newDepartureTime
+            );
+            if (res.success) {
+                setAttendanceHistory(prev => {
+                    const filtered = prev.filter((a: any) => !(a.courseId === attCourseId && a.userId === studentId && new Date(a.date).toISOString().split('T')[0] === attDate));
+                    return newStatus === "UNMARKED" || !res.record ? filtered : [res.record, ...filtered];
+                });
+            } else {
+                toast.error("Error al registrar asistencia: " + res.error);
+                setAttRecords(prev => {
+                    const newRecords = { ...prev };
+                    if (prevRecord) {
+                        newRecords[studentId] = prevRecord;
+                    } else {
+                        delete newRecords[studentId];
+                    }
+                    return newRecords;
+                });
+            }
+        } catch (e) {
+            toast.error("Error de red al guardar asistencia");
+            setAttRecords(prev => {
+                const newRecords = { ...prev };
+                if (prevRecord) {
+                    newRecords[studentId] = prevRecord;
+                } else {
+                    delete newRecords[studentId];
+                }
+                return newRecords;
+            });
+        }
+    };
+
+    const updateLateTime = async (studentId: string, time: string) => {
+        if (isDateLocked && !hasEditPermission) {
+            toast.error("Esta fecha pertenece a una semana anterior y está bloqueada.");
+            return;
+        }
+        const prevRecord = attRecords[studentId];
+        const departureTime = prevRecord?.departureTime;
+
+        // Optimistic update
+        setAttRecords(prev => {
+            if (!prev[studentId]) return prev;
+            return {
+                ...prev,
+                [studentId]: { ...prev[studentId], arrivalTime: time }
+            };
+        });
+
+        try {
+            const res = await saveSingleAttendanceAction(
+                attCourseId,
+                studentId,
+                attDate,
+                "LATE",
+                undefined,
+                time,
+                departureTime
+            );
+            if (res.success && res.record) {
+                setAttendanceHistory(prev => {
+                    const filtered = prev.filter((a: any) => !(a.courseId === attCourseId && a.userId === studentId && new Date(a.date).toISOString().split('T')[0] === attDate));
+                    return [res.record, ...filtered];
+                });
+            } else if (!res.success) {
+                toast.error("Error al actualizar la hora de ingreso: " + res.error);
+                setAttRecords(prev => {
+                    if (!prev[studentId]) return prev;
+                    return {
+                        ...prev,
+                        [studentId]: prevRecord
+                    };
+                });
+            }
+        } catch (e) {
+            toast.error("Error de red al actualizar la hora");
+            setAttRecords(prev => {
+                if (!prev[studentId]) return prev;
+                return {
+                    ...prev,
+                    [studentId]: prevRecord
+                };
+            });
+        }
+    };
+
+    const updateLeaveTime = async (studentId: string, time: string) => {
+        if (isDateLocked && !hasEditPermission) {
+            toast.error("Esta fecha pertenece a una semana anterior y está bloqueada.");
+            return;
+        }
+        const prevRecord = attRecords[studentId];
+        const arrivalTime = prevRecord?.arrivalTime;
+
+        // Optimistic update
+        setAttRecords(prev => {
+            if (!prev[studentId]) return prev;
+            return {
+                ...prev,
+                [studentId]: { ...prev[studentId], departureTime: time }
+            };
+        });
+
+        try {
+            const res = await saveSingleAttendanceAction(
+                attCourseId,
+                studentId,
+                attDate,
+                arrivalTime ? "LATE" : "LEAVE_EARLY",
+                undefined,
+                arrivalTime,
+                time
+            );
+            if (res.success && res.record) {
+                setAttendanceHistory(prev => {
+                    const filtered = prev.filter((a: any) => !(a.courseId === attCourseId && a.userId === studentId && new Date(a.date).toISOString().split('T')[0] === attDate));
+                    return [res.record, ...filtered];
+                });
+            } else if (!res.success) {
+                toast.error("Error al actualizar la hora de retiro: " + res.error);
+                setAttRecords(prev => {
+                    if (!prev[studentId]) return prev;
+                    return {
+                        ...prev,
+                        [studentId]: prevRecord
+                    };
+                });
+            }
+        } catch (e) {
+            toast.error("Error de red al actualizar la hora");
+            setAttRecords(prev => {
+                if (!prev[studentId]) return prev;
+                return {
+                    ...prev,
+                    [studentId]: prevRecord
+                };
+            });
+        }
+    };
+
+    const nextSeqStudent = () => {
+        if (seqIndex < filteredStudents.length - 1) {
+            setSeqIndex(i => i + 1);
+        } else {
+            exitSequentialFullscreen();
+            toast.success("Llamado de asistencia finalizado.");
+        }
+    };
+
+    const prevSeqStudent = () => {
+        if (seqIndex > 0) setSeqIndex(i => i - 1);
+    };
+
+    const startSequentialFullscreen = () => {
+        setSeqIndex(0);
+        setIsSequentialFullscreen(true);
+        // Attempt native fullscreen
+        const elem = document.documentElement;
+        if (elem.requestFullscreen) {
+            elem.requestFullscreen().catch((err) => {
+                console.log("Error attempting fullscreen", err);
+            });
+        }
+    };
+
+    const exitSequentialFullscreen = () => {
+        setIsSequentialFullscreen(false);
+        if (document.fullscreenElement) {
+            document.exitFullscreen().catch((err) => {
+                console.log("Error exiting fullscreen", err);
+            });
+        }
+    };
+
+    // ── EXPORT FUNCTIONS ────────────────────────────────────────────────────────
+    const exportMatrixToExcel = async () => {
+        if (!selectedGroup || !attCourseId) return toast.error("Selecciona un grupo y materia");
+        const course = selectedGroup.courses?.find((c: any) => c.id === attCourseId);
+        const courseTitle = course?.title || "Materia";
+        const history = attendanceHistory.filter((r: any) => r.courseId === attCourseId);
+        const validScheduleDates = getValidClassDaysList();
+        const historyDates = history.map((r: any) => toCalendarYMD(r.date)).filter(Boolean);
+        const allDates = validScheduleDates.length > 0 
+            ? validScheduleDates 
+            : [...new Set(historyDates)].sort();
+        const students = [...(selectedGroup.students ?? [])].sort((a: any, b: any) => a.name.localeCompare(b.name));
+
+        const studentData = students.map((s: any) => {
+            const records: Record<string, { status: string; justification?: string }> = {};
+            let absences = 0;
+            let lates = 0;
+            let leaves = 0;
+            let excuses = 0;
+            allDates.forEach(date => {
+                const rec = history.find((r: any) => {
+                    const rDate = toCalendarYMD(r.date);
+                    return r.userId === s.id && rDate === date;
+                });
+                if (rec) {
+                    records[date] = { status: rec.status, justification: rec.justification };
+                    if (rec.justification) excuses++;
+                    else if (rec.status === "ABSENT") absences++;
+                    else if (rec.status === "LATE") lates++;
+                    else if (rec.status === "LEAVE_EARLY") leaves++;
+                }
+            });
+            const total = allDates.length;
+            const attended = total - absences;
+            const attendancePercent = total > 0 ? (attended / total) * 100 : 100;
+
+            return {
+                id: s.id,
+                name: formatName(s.name, s.profile),
+                identification: s.profile?.identificacion || "—",
+                records,
+                absences,
+                lates,
+                leaves,
+                excuses,
+                attendancePercent,
+            };
+        });
+
+        const toastId = toast.loading("Generando Excel de Planilla...");
+        try {
+            await generateAndDownloadAttendanceMatrixExcel({
+                groupName: selectedGroup.name,
+                courseTitle,
+                dateStr: attDate,
+                allDates,
+                students: studentData,
+            });
+            toast.success("Planilla exportada a Excel", { id: toastId });
+        } catch (e: any) {
+            toast.error("Error al exportar a Excel: " + e.message, { id: toastId });
+        }
+    };
+
+    const exportMatrixToPDF = async () => {
+        if (!selectedGroup || !attCourseId) return toast.error("Selecciona un grupo y materia");
+        const course = selectedGroup.courses?.find((c: any) => c.id === attCourseId);
+        const courseTitle = course?.title || "Materia";
+        const history = attendanceHistory.filter((r: any) => r.courseId === attCourseId);
+        const validScheduleDates = getValidClassDaysList();
+        const historyDates = history.map((r: any) => toCalendarYMD(r.date)).filter(Boolean);
+        const allDates = validScheduleDates.length > 0 
+            ? validScheduleDates 
+            : [...new Set(historyDates)].sort();
+        const students = [...(selectedGroup.students ?? [])].sort((a: any, b: any) => a.name.localeCompare(b.name));
+
+        const studentData = students.map((s: any) => {
+            const records: Record<string, { status: string; justification?: string }> = {};
+            let absences = 0;
+            let lates = 0;
+            let leaves = 0;
+            let excuses = 0;
+            allDates.forEach(date => {
+                const rec = history.find((r: any) => {
+                    const rDate = toCalendarYMD(r.date);
+                    return r.userId === s.id && rDate === date;
+                });
+                if (rec) {
+                    records[date] = { status: rec.status, justification: rec.justification };
+                    if (rec.justification) excuses++;
+                    else if (rec.status === "ABSENT") absences++;
+                    else if (rec.status === "LATE") lates++;
+                    else if (rec.status === "LEAVE_EARLY") leaves++;
+                }
+            });
+            const total = allDates.length;
+            const attended = total - absences;
+            const attendancePercent = total > 0 ? (attended / total) * 100 : 100;
+
+            return {
+                id: s.id,
+                name: formatName(s.name, s.profile),
+                identification: s.profile?.identificacion || "—",
+                records,
+                absences,
+                lates,
+                leaves,
+                excuses,
+                attendancePercent,
+            };
+        });
+
+        const toastId = toast.loading("Generando PDF vectorial de Planilla...");
+        try {
+            await generateAndDownloadAttendanceMatrixPdf({
+                groupName: selectedGroup.name,
+                courseTitle,
+                dateStr: attDate,
+                allDates,
+                students: studentData,
+            });
+            toast.success("Planilla exportada a PDF", { id: toastId });
+        } catch (e: any) {
+            toast.error("Error al exportar a PDF: " + e.message, { id: toastId });
+        }
+    };
+
+    const exportHistoryToExcel = async () => {
+        if (!selectedGroup || !attCourseId) return toast.error("Selecciona un grupo y materia");
+        const course = selectedGroup.courses?.find((c: any) => c.id === attCourseId);
+        const courseTitle = course?.title || "Materia";
+        const history = attendanceHistory.filter((r: any) => {
+            if (r.courseId !== attCourseId || r.status === "PRESENT") return false;
+            if (historyStudentFilter !== "all" && r.userId !== historyStudentFilter) return false;
+            if (historyScheduleScope === "current") return isRecordInCurrentSchedule(r, attCourseId);
+            if (historyScheduleScope === "previous") return !isRecordInCurrentSchedule(r, attCourseId);
+            return true;
+        });
+        const students = selectedGroup.students ?? [];
+
+        const rows: any[] = [];
+        for (const s of students) {
+            const recs = history.filter((r: any) => r.userId === s.id);
+            if (recs.length === 0) continue;
+            for (const rec of recs) {
+                const dateFormatted = toCalendarYMD(rec.date);
+                let typeLabel = "Falta";
+                if (rec.justification) typeLabel = "Excusa / Justificado";
+                else if (rec.status === "LATE") typeLabel = "Llegada Tarde";
+                else if (rec.status === "LEAVE_EARLY") typeLabel = "Retiro Anticipado";
+                else if (rec.status === "ABSENT") typeLabel = "Falta";
+
+                const timeStr = rec.arrivalTime 
+                    ? (typeof rec.arrivalTime === 'string' ? rec.arrivalTime.substring(11, 16) || rec.arrivalTime : format(new Date(rec.arrivalTime), "HH:mm"))
+                    : rec.departureTime 
+                        ? (typeof rec.departureTime === 'string' ? rec.departureTime.substring(11, 16) || rec.departureTime : format(new Date(rec.departureTime), "HH:mm"))
+                        : undefined;
+
+                rows.push({
+                    studentName: formatName(s.name, s.profile),
+                    identification: s.profile?.identificacion || "—",
+                    date: dateFormatted,
+                    type: typeLabel,
+                    time: timeStr,
+                    justification: rec.justification || "Sin justificación",
+                });
+            }
+        }
+
+        if (rows.length === 0) return toast.error("No hay registros de novedades para exportar");
+
+        const toastId = toast.loading("Generando Excel de Historial...");
+        try {
+            await generateAndDownloadAttendanceHistoryExcel(selectedGroup.name, courseTitle, rows);
+            toast.success("Historial exportado a Excel", { id: toastId });
+        } catch (e: any) {
+            toast.error("Error al exportar a Excel: " + e.message, { id: toastId });
+        }
+    };
+
+    const exportHistoryToPDF = async () => {
+        if (!selectedGroup || !attCourseId) return toast.error("Selecciona un grupo y materia");
+        const course = selectedGroup.courses?.find((c: any) => c.id === attCourseId);
+        const courseTitle = course?.title || "Materia";
+        const history = attendanceHistory.filter((r: any) => {
+            if (r.courseId !== attCourseId || r.status === "PRESENT") return false;
+            if (historyStudentFilter !== "all" && r.userId !== historyStudentFilter) return false;
+            if (historyScheduleScope === "current") return isRecordInCurrentSchedule(r, attCourseId);
+            if (historyScheduleScope === "previous") return !isRecordInCurrentSchedule(r, attCourseId);
+            return true;
+        });
+        const students = selectedGroup.students ?? [];
+
+        const rows: any[] = [];
+        for (const s of students) {
+            const recs = history.filter((r: any) => r.userId === s.id);
+            if (recs.length === 0) continue;
+            for (const rec of recs) {
+                const dateFormatted = toCalendarYMD(rec.date);
+                let typeLabel = "Falta";
+                if (rec.justification) typeLabel = "Excusa";
+                else if (rec.status === "LATE") typeLabel = "Llegada Tarde";
+                else if (rec.status === "LEAVE_EARLY") typeLabel = "Retiro Anticipado";
+                else if (rec.status === "ABSENT") typeLabel = "Falta";
+
+                const timeStr = rec.arrivalTime 
+                    ? (typeof rec.arrivalTime === 'string' ? rec.arrivalTime.substring(11, 16) || rec.arrivalTime : format(new Date(rec.arrivalTime), "HH:mm"))
+                    : rec.departureTime 
+                        ? (typeof rec.departureTime === 'string' ? rec.departureTime.substring(11, 16) || rec.departureTime : format(new Date(rec.departureTime), "HH:mm"))
+                        : undefined;
+
+                rows.push({
+                    studentName: formatName(s.name, s.profile),
+                    identification: s.profile?.identificacion || "—",
+                    date: dateFormatted,
+                    type: typeLabel,
+                    time: timeStr,
+                    justification: rec.justification || "Sin justificación",
+                });
+            }
+        }
+
+        if (rows.length === 0) return toast.error("No hay registros de novedades para exportar");
+
+        const toastId = toast.loading("Generando PDF vectorial de Historial...");
+        try {
+            await generateAndDownloadAttendanceHistoryPdf(selectedGroup.name, courseTitle, rows);
+            toast.success("Historial exportado a PDF", { id: toastId });
+        } catch (e: any) {
+            toast.error("Error al exportar a PDF: " + e.message, { id: toastId });
+        }
+    };
+    // ── END EXPORT FUNCTIONS ─────────────────────────────────────────────────────
+
+    const handleSaveAttendance = async () => {
+        if (isSavingAtt) return;
+        if (isDateLocked && !hasEditPermission) {
+            toast.error("Esta fecha pertenece a una semana anterior y está bloqueada.");
+            return;
+        }
+        if (!attCourseId) return toast.error("Selecciona una materia");
+        
+        setIsSavingAtt(true);
+        try {
+            // Send ONLY records with a status (exclude UNMARKED)
+            const records = Object.entries(attRecords)
+                .filter(([_, rec]) => rec && rec.status && (rec.status as any) !== "UNMARKED")
+                .map(([studentId, rec]) => ({
+                    studentId,
+                    status: rec.status,
+                    arrivalTime: rec.arrivalTime ? `${attDate}T${rec.arrivalTime}:00Z` : undefined,
+                    departureTime: rec.departureTime ? `${attDate}T${rec.departureTime}:00Z` : undefined,
+                    justification: rec.justification
+                }));
+
+            const res = await saveAttendanceBatch(attCourseId, attDate, records as any);
+            if (res.success) {
+                toast.success("Asistencia guardada correctamente");
+                loadHistory(selectedGroup!.id);
+                setAttMode("list"); // return to list mode
+            } else {
+                toast.error("Error al guardar asistencia: " + res.error);
+            }
+        } catch (error) {
+            toast.error("Error al guardar asistencia");
+        } finally {
+            setIsSavingAtt(false);
+        }
+    };
+
+    const handleUpdateSingleAttendance = async (studentId: string, dateStr: string, status: "PRESENT" | "ABSENT" | "LATE" | "LEAVE_EARLY" | "EXCUSED") => {
+        if (isDateLocked && !hasEditPermission) {
+            toast.error("Esta fecha pertenece a una semana anterior y está bloqueada.");
+            return;
+        }
+        if (!attCourseId) return toast.error("Selecciona una materia");
+
+        let justification: string | undefined = undefined;
+        if (status === "EXCUSED") {
+            const promptVal = window.prompt("Ingresa la justificación para la excusa:", "Justificado en planilla");
+            if (promptVal === null) return; // User cancelled
+            justification = promptVal || "Justificado en planilla";
+        }
+
+        const toastId = toast.loading("Actualizando asistencia...");
+        try {
+            const res = await saveSingleAttendanceAction(attCourseId, studentId, dateStr, status, justification);
+            if (res.success) {
+                toast.success("Asistencia actualizada", { id: toastId });
+                setAttendanceHistory(prev => {
+                    const filtered = prev.filter((a: any) => !(a.courseId === attCourseId && a.userId === studentId && new Date(a.date).toISOString().split('T')[0] === dateStr));
+                    return res.record ? [res.record, ...filtered] : filtered;
+                });
+            } else {
+                toast.error("Error: " + res.error, { id: toastId });
+            }
+        } catch (error: any) {
+            toast.error("Error al actualizar la asistencia", { id: toastId });
+        }
+    };
+
+    const handleSaveRemarks = async () => {
+        if (!remarkCourseId) return toast.error("Selecciona una materia");
+        if (!selectedRemarkStudentId || !selectedRemarkStudent) return toast.error("Selecciona un aprendiz para la observación");
+        if (!remarkTitle.trim() || !remarkDesc.trim()) return toast.error("Completa el título y la descripción");
+
+        setIsSavingRemark(true);
+        const res = await saveRemarkBatch(teacherId!, remarkCourseId, [selectedRemarkStudentId], remarkType, remarkTitle, remarkDesc, templateCustomValues);
+        if (res.success) {
+            toast.success("Observación guardada correctamente");
+            
+            if (sendEmailOnSave) {
+                if (selectedRemarkStudent.email) {
+                    const subject = encodeURIComponent(getParsedTitle(selectedRemarkStudent));
+                    const body = encodeURIComponent(getParsedDescription(selectedRemarkStudent));
+                    window.location.href = `mailto:${selectedRemarkStudent.email}?subject=${subject}&body=${body}`;
+                    // Notify student via push
+                    notifyEmailSentBatchAction([selectedRemarkStudent.id], "REMARK");
+                } else {
+                    toast.warning("El aprendiz seleccionado no tiene un correo registrado.");
+                }
+            }
+
+            setRemarkTitle("");
+            setRemarkDesc("");
+            setSelectedRemarkStudentId(null);
+            setSelectedTemplateId("");
+            setTemplateCustomValues({});
+            setSendEmailOnSave(false);
+            loadHistory(selectedGroup!.id);
+        } else {
+            toast.error("Error al guardar observación: " + res.error);
+        }
+        setIsSavingRemark(false);
+    };
+
+    const handleDeleteRemark = (remarkId: string) => {
+        requestConfirm(
+            "¿Retirar observación?",
+            "¿Estás seguro de que deseas retirar esta observación? Esta acción no se puede deshacer.",
+            async () => {
+                const toastId = toast.loading("Retirando observación...");
+                try {
+                    const res = await deleteRemarkAction(remarkId);
+                    if (res.success) {
+                        toast.success("Observación retirada correctamente", { id: toastId });
+                        await loadHistory(selectedGroup!.id);
+                    } else {
+                        toast.error("Error al retirar la observación: " + res.error, { id: toastId });
+                    }
+                } catch (error: any) {
+                    toast.error("Error de conexión al retirar la observación", { id: toastId });
+                }
+            }
+        );
+    };
+
+    const handleDeleteAttendance = (att: any) => {
+        const studentName = formatName(att.user.name, att.user.profile);
+        const formattedDate = formatCalendarDate(att.date, "dd/MM/yyyy");
+        
+        requestConfirm(
+            "¿Retirar registro de asistencia?",
+            `¿Estás seguro de que deseas retirar el registro de inasistencia/retraso de ${studentName} para el día ${formattedDate}?`,
+            async () => {
+                const dateStr = new Date(att.date).toISOString().split('T')[0];
+                const toastId = toast.loading("Retirando falta/retraso...");
+                try {
+                    const res = await saveSingleAttendanceAction(
+                        att.courseId,
+                        att.userId,
+                        dateStr,
+                        "PRESENT"
+                    );
+                    if (res.success) {
+                        toast.success("Asistencia actualizada a 'Presente'", { id: toastId });
+                        setAttendanceHistory(prev => prev.filter((a: any) => a.id !== att.id));
+                    } else {
+                        toast.error("Error al retirar la falta/retraso: " + res.error, { id: toastId });
+                    }
+                } catch (error: any) {
+                    toast.error("Error de conexión al retirar la falta/retraso", { id: toastId });
+                }
+            }
+        );
+    };
+
+
+    if (!groups || groups.length === 0) {
+        return (
+            <Card className="flex flex-col items-center justify-center py-24 border-dashed">
+                <CardContent className="flex flex-col items-center justify-center pt-6">
+                    <Users className="h-12 w-12 text-muted-foreground mb-4" />
+                    <CardTitle className="text-2xl font-bold mb-2">No tienes grupos asignados</CardTitle>
+                </CardContent>
+            </Card>
+        );
+    }
+
+    return (
+        <div className="flex flex-col gap-6 max-w-full">
+            {/* MAIN WORKSPACE */}
+            <Card className="flex-1 w-full min-w-0 border border-border/80 shadow-md rounded-3xl overflow-hidden bg-card p-0 gap-0">
+                {selectedGroup ? (
+                    <Tabs value={activeTab} onValueChange={handleTabChangeAttempt} className="flex-1 flex flex-col h-full min-h-[600px]">
+                        <div className="p-3 sm:p-4 border-b bg-muted/20 w-full flex flex-col gap-3">
+                            {/* FILA SUPERIOR: Selección de Fichas (ENCIMA DE LAS PESTAÑAS) */}
+                            <div className="flex items-center gap-2.5 p-2 px-3 bg-background/80 dark:bg-card/70 rounded-2xl border border-border/70 backdrop-blur-md w-full flex-wrap shadow-2xs">
+                                <span className="text-xs font-black text-muted-foreground uppercase tracking-wider shrink-0 mr-1 flex items-center gap-1.5">
+                                    <Users className="w-3.5 h-3.5 text-primary" />
+                                    FICHAS:
+                                </span>
+                                <div className="flex flex-wrap items-center gap-2">
+                                    {groups.map((g) => {
+                                        const isActive = selectedGroupId === g.id;
+                                        return (
+                                            <Button
+                                                key={g.id}
+                                                type="button"
+                                                variant={isActive ? "default" : "outline"}
+                                                size="sm"
+                                                disabled={isSavingAtt || (isLoadingAttendance && isActive)}
+                                                onClick={() => handleGroupChangeAttempt(g.id)}
+                                                className={`h-8 text-xs font-black rounded-xl transition-all flex items-center gap-1.5 ${
+                                                    isActive
+                                                        ? "bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm ring-2 ring-primary/25"
+                                                        : "hover:bg-primary/10 hover:text-primary text-foreground border-border/80"
+                                                }`}
+                                            >
+                                                {isActive && isLoadingAttendance && (
+                                                    <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                                                )}
+                                                <span>{g.name}</span>
+                                            </Button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+
+                            {/* FILA INFERIOR: Pestañas de Navegación estilo subrayado plano (Flat Underline) */}
+                            <div 
+                                className="w-full overflow-x-auto overflow-y-hidden scrollbar-none flex items-center touch-scroll overscroll-x-contain overscroll-y-auto -mb-px"
+                                style={{
+                                    WebkitOverflowScrolling: "touch",
+                                    touchAction: "pan-x pan-y",
+                                    overscrollBehaviorX: "contain",
+                                    overscrollBehaviorY: "auto"
+                                }}
+                            >
+                                <TabsList className="flex flex-nowrap items-center justify-start h-auto p-0 bg-transparent rounded-none gap-0 sm:gap-1 w-max">
+                                    {/* ── ASISTENCIA ── */}
+                                    <TabsTrigger
+                                        value="attendance"
+                                        className="group relative flex items-center gap-2 h-11 px-3.5 sm:px-4 text-xs sm:text-[13px] font-semibold whitespace-nowrap bg-transparent! dark:bg-transparent! rounded-none border-0 border-b-2 border-transparent data-[state=active]:border-primary! data-[state=active]:text-primary! dark:data-[state=active]:text-primary! data-[state=active]:bg-transparent! dark:data-[state=active]:bg-transparent! data-[state=active]:shadow-none! text-muted-foreground hover:text-foreground transition-all shrink-0 cursor-pointer -mb-px"
+                                    >
+                                        <ClipboardList className="w-4 h-4 text-muted-foreground group-data-[state=active]:text-primary group-hover:text-foreground transition-colors shrink-0" />
+                                        <span>Asistencia</span>
+                                    </TabsTrigger>
+
+                                    {/* ── ASISTENCIA SEMANAL MULTIGRUPO / HORARIOS ── */}
+                                    <TabsTrigger
+                                        value="schedule-attendance"
+                                        className="group relative flex items-center gap-2 h-11 px-3.5 sm:px-4 text-xs sm:text-[13px] font-semibold whitespace-nowrap bg-transparent! dark:bg-transparent! rounded-none border-0 border-b-2 border-transparent data-[state=active]:border-primary! data-[state=active]:text-primary! dark:data-[state=active]:text-primary! data-[state=active]:bg-transparent! dark:data-[state=active]:bg-transparent! data-[state=active]:shadow-none! text-muted-foreground hover:text-foreground transition-all shrink-0 cursor-pointer -mb-px"
+                                    >
+                                        <CalendarDays className="w-4 h-4 text-muted-foreground group-data-[state=active]:text-primary group-hover:text-foreground transition-colors shrink-0" />
+                                        <span>Asistencia General</span>
+                                    </TabsTrigger>
+
+                                    {/* ── ESTUDIANTES / APRENDICES ── */}
+                                    <TabsTrigger
+                                        value="students"
+                                        className="group relative flex items-center gap-2 h-11 px-3.5 sm:px-4 text-xs sm:text-[13px] font-semibold whitespace-nowrap bg-transparent! dark:bg-transparent! rounded-none border-0 border-b-2 border-transparent data-[state=active]:border-primary! data-[state=active]:text-primary! dark:data-[state=active]:text-primary! data-[state=active]:bg-transparent! dark:data-[state=active]:bg-transparent! data-[state=active]:shadow-none! text-muted-foreground hover:text-foreground transition-all shrink-0 cursor-pointer -mb-px"
+                                    >
+                                        <Users className="w-4 h-4 text-muted-foreground group-data-[state=active]:text-primary group-hover:text-foreground transition-colors shrink-0" />
+                                        <span>Aprendices</span>
+                                    </TabsTrigger>
+
+                                    {/* ── OBSERVACIONES ── */}
+                                    <TabsTrigger
+                                        value="remarks"
+                                        className="group relative flex items-center gap-2 h-11 px-3.5 sm:px-4 text-xs sm:text-[13px] font-semibold whitespace-nowrap bg-transparent! dark:bg-transparent! rounded-none border-0 border-b-2 border-transparent data-[state=active]:border-primary! data-[state=active]:text-primary! dark:data-[state=active]:text-primary! data-[state=active]:bg-transparent! dark:data-[state=active]:bg-transparent! data-[state=active]:shadow-none! text-muted-foreground hover:text-foreground transition-all shrink-0 cursor-pointer -mb-px"
+                                    >
+                                        <AlertTriangle className="w-4 h-4 text-muted-foreground group-data-[state=active]:text-primary group-hover:text-foreground transition-colors shrink-0" />
+                                        <span>Observaciones</span>
+                                    </TabsTrigger>
+
+                                    {/* ── PLANES DE MEJORAMIENTO ── */}
+                                    <TabsTrigger
+                                        value="improvement"
+                                        className="group relative flex items-center gap-2 h-11 px-3.5 sm:px-4 text-xs sm:text-[13px] font-semibold whitespace-nowrap bg-transparent! dark:bg-transparent! rounded-none border-0 border-b-2 border-transparent data-[state=active]:border-primary! data-[state=active]:text-primary! dark:data-[state=active]:text-primary! data-[state=active]:bg-transparent! dark:data-[state=active]:bg-transparent! data-[state=active]:shadow-none! text-muted-foreground hover:text-foreground transition-all shrink-0 cursor-pointer -mb-px"
+                                    >
+                                        <FileText className="w-4 h-4 text-muted-foreground group-data-[state=active]:text-primary group-hover:text-foreground transition-colors shrink-0" />
+                                        <span>Planes de Mejoramiento</span>
+                                    </TabsTrigger>
+
+                                    {/* ── CALIFICACIONES ── */}
+                                    <TabsTrigger
+                                        value="grades"
+                                        className="group relative flex items-center gap-2 h-11 px-3.5 sm:px-4 text-xs sm:text-[13px] font-semibold whitespace-nowrap bg-transparent! dark:bg-transparent! rounded-none border-0 border-b-2 border-transparent data-[state=active]:border-primary! data-[state=active]:text-primary! dark:data-[state=active]:text-primary! data-[state=active]:bg-transparent! dark:data-[state=active]:bg-transparent! data-[state=active]:shadow-none! text-muted-foreground hover:text-foreground transition-all shrink-0 cursor-pointer -mb-px"
+                                    >
+                                        <GraduationCap className="w-4 h-4 text-muted-foreground group-data-[state=active]:text-primary group-hover:text-foreground transition-colors shrink-0" />
+                                        <span>Calificaciones</span>
+                                    </TabsTrigger>
+
+                                    {/* ── DOCUMENTACIÓN ── */}
+                                    <TabsTrigger
+                                        value="documentation"
+                                        className="group relative flex items-center gap-2 h-11 px-3.5 sm:px-4 text-xs sm:text-[13px] font-semibold whitespace-nowrap bg-transparent! dark:bg-transparent! rounded-none border-0 border-b-2 border-transparent data-[state=active]:border-primary! data-[state=active]:text-primary! dark:data-[state=active]:text-primary! data-[state=active]:bg-transparent! dark:data-[state=active]:bg-transparent! data-[state=active]:shadow-none! text-muted-foreground hover:text-foreground transition-all shrink-0 cursor-pointer -mb-px"
+                                    >
+                                        <BookOpen className="w-4 h-4 text-muted-foreground group-data-[state=active]:text-primary group-hover:text-foreground transition-colors shrink-0" />
+                                        <span>Documentación</span>
+                                    </TabsTrigger>
+
+                                    {/* ── ANALÍTICA ── */}
+                                    <TabsTrigger
+                                        value="analytics"
+                                        className="group relative flex items-center gap-2 h-11 px-3.5 sm:px-4 text-xs sm:text-[13px] font-semibold whitespace-nowrap bg-transparent! dark:bg-transparent! rounded-none border-0 border-b-2 border-transparent data-[state=active]:border-primary! data-[state=active]:text-primary! dark:data-[state=active]:text-primary! data-[state=active]:bg-transparent! dark:data-[state=active]:bg-transparent! data-[state=active]:shadow-none! text-muted-foreground hover:text-foreground transition-all shrink-0 cursor-pointer -mb-px"
+                                    >
+                                        <BarChart3 className="w-4 h-4 text-muted-foreground group-data-[state=active]:text-primary group-hover:text-foreground transition-colors shrink-0" />
+                                        <span>Analítica</span>
+                                    </TabsTrigger>
+                                </TabsList>
+                            </div>
+                        </div>
+
+                        <div 
+                            className="flex-1 p-3 sm:p-6 overflow-y-visible sm:overflow-y-auto overflow-x-hidden w-full min-w-0 max-w-full"
+                            style={{
+                                WebkitOverflowScrolling: "touch",
+                                touchAction: "pan-x pan-y",
+                            }}
+                        >
+                            {/* TAB 1: STUDENTS */}
+                            <TabsContent value="students" className="m-0 space-y-4 outline-none animate-in fade-in-50 duration-200">
+                                {/* Header Hero Banner */}
+                                <div className="bg-primary/5 border border-primary/20 rounded-2xl sm:rounded-3xl p-4 sm:p-6 lg:p-7 relative overflow-hidden shadow-2xs">
+                                    <Users className="absolute right-0 top-0 w-64 h-64 text-primary/5 -translate-y-1/4 translate-x-1/4 pointer-events-none" />
+                                    <div className="relative z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                                        <div className="space-y-1">
+                                            <h3 className="text-xl sm:text-2xl font-black text-foreground tracking-tight">Directorio de Aprendices</h3>
+                                            <p className="text-xs text-muted-foreground max-w-2xl">
+                                                Listado oficial de aprendices matriculados en la ficha <span className="font-extrabold text-foreground">{selectedGroup.name}</span>. Gestiona información de contacto, credenciales, novedades formativas y dinámicas de grupo.
+                                            </p>
+                                        </div>
+                                        <div className="flex items-center gap-2 self-start sm:self-auto shrink-0 flex-wrap">
+                                            {getGroupPeriodName(selectedGroup) && (
+                                                <Badge variant="outline" className="text-xs font-bold text-primary bg-primary/10 border-primary/20 px-3 py-1.5 rounded-xl shadow-2xs">
+                                                    {getGroupPeriodName(selectedGroup)}
+                                                </Badge>
+                                            )}
+                                            {getGroupTimelineName(selectedGroup) && (
+                                                <Badge variant="outline" className="text-xs font-semibold text-primary bg-primary/10 border-primary/20 px-3 py-1.5 rounded-xl flex items-center gap-1.5 shadow-2xs">
+                                                    <GitBranch className="w-3.5 h-3.5 text-primary shrink-0" />
+                                                    {getGroupTimelineName(selectedGroup)}
+                                                </Badge>
+                                            )}
+                                            <Badge variant="outline" className="text-xs font-bold text-muted-foreground bg-background/80 px-3 py-1.5 rounded-xl border-border shadow-2xs">
+                                                Total: <strong className="text-primary font-black ml-1">{filteredStudents.length}</strong> {filteredStudents.length === 1 ? "aprendiz" : "aprendices"}
+                                            </Badge>
+                                            {selectedGroup?.voceroPrincipalId && (() => {
+                                                const vocero = (selectedGroup.students || []).find((st: any) => st.id === selectedGroup.voceroPrincipalId);
+                                                return vocero ? (
+                                                    <Badge variant="outline" className="text-xs font-black text-amber-800 dark:text-amber-300 bg-amber-500/15 border-amber-500/30 px-3 py-1.5 rounded-xl flex items-center gap-1.5 shadow-2xs">
+                                                        <Award className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                                                        <span>Vocero: <strong className="font-black">{formatName(vocero.name, vocero.profile)}</strong></span>
+                                                    </Badge>
+                                                ) : null;
+                                            })()}
+                                            {selectedGroup?.voceroSuplenteId && (() => {
+                                                const suplente = (selectedGroup.students || []).find((st: any) => st.id === selectedGroup.voceroSuplenteId);
+                                                return suplente ? (
+                                                    <Badge variant="outline" className="text-xs font-black text-sky-800 dark:text-sky-300 bg-sky-500/15 border-sky-500/30 px-3 py-1.5 rounded-xl flex items-center gap-1.5 shadow-2xs">
+                                                        <ShieldCheck className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400 shrink-0" />
+                                                        <span>Suplente: <strong className="font-black">{formatName(suplente.name, suplente.profile)}</strong></span>
+                                                    </Badge>
+                                                ) : null;
+                                            })()}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 bg-muted/30 p-3.5 rounded-2xl border border-border/70 shadow-2xs">
+                                    <div className="relative flex-1 max-w-lg">
+                                        <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                                        <Input 
+                                            placeholder="Buscar por nombre o identificación..." 
+                                            className="pl-10 h-10 rounded-xl bg-background border-input shadow-2xs text-xs sm:text-sm font-medium focus-visible:ring-2 focus-visible:ring-primary/20"
+                                            value={searchQuery}
+                                            onChange={e => setSearchQuery(e.target.value)}
+                                        />
+                                    </div>
+                                    
+                                    <div className="flex items-center justify-between gap-2.5 flex-wrap sm:flex-nowrap">
+                                        <div className="flex items-center gap-2 flex-1 sm:flex-initial justify-end">
+                                            {selectedStudents.length > 0 && (
+                                                <Button 
+                                                    variant="secondary" 
+                                                    size="sm"
+                                                    className="h-9 px-3 rounded-xl font-bold bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 text-xs flex items-center gap-1.5 shadow-xs"
+                                                    onClick={() => {
+                                                        const selectedEmails = filteredStudents
+                                                            .filter((s: any) => selectedStudents.includes(s.id) && s.email)
+                                                            .map((s: any) => s.email)
+                                                            .join(',');
+                                                        if (selectedEmails) window.location.href = `mailto:${selectedEmails}`;
+                                                    }}
+                                                >
+                                                    <Mail className="h-4 w-4" />
+                                                    Enviar Correo ({selectedStudents.length})
+                                                </Button>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Mobile Native App Student Cards (Visible on mobile, hidden on desktop) */}
+                                <div className="block sm:hidden space-y-2.5">
+                                    <div className="flex items-center justify-between px-1 py-0.5">
+                                        <div className="flex items-center gap-2">
+                                            <Checkbox 
+                                                checked={filteredStudents.length > 0 && selectedStudents.length === filteredStudents.length}
+                                                onCheckedChange={toggleAllStudents}
+                                            />
+                                            <span className="text-[11px] font-bold text-muted-foreground uppercase">Seleccionar Todos</span>
+                                        </div>
+                                        {selectedStudents.length > 0 && (
+                                            <span className="text-[11px] font-extrabold text-primary">{selectedStudents.length} seleccionados</span>
+                                        )}
+                                    </div>
+
+                                    {filteredStudents.map((s: any) => {
+                                        const isVoceroPrincipal = s.id === selectedGroup?.voceroPrincipalId;
+                                        const isVoceroSuplente = s.id === selectedGroup?.voceroSuplenteId;
+                                        return (
+                                        <div
+                                            key={s.id}
+                                            className={cn(
+                                                "p-3.5 rounded-2xl border bg-card shadow-xs transition-all flex flex-col gap-2.5",
+                                                selectedStudents.includes(s.id) 
+                                                    ? "border-primary/50 bg-primary/5 shadow-primary/5" 
+                                                    : isVoceroPrincipal 
+                                                    ? "border-amber-500/50 bg-amber-500/[0.04] shadow-amber-500/10 ring-1 ring-amber-500/20" 
+                                                    : isVoceroSuplente 
+                                                    ? "border-sky-500/50 bg-sky-500/[0.04] shadow-sky-500/10 ring-1 ring-sky-500/20" 
+                                                    : "border-border/70"
+                                            )}
+                                        >
+                                            {/* Top info section: Full width for name, doc and contact */}
+                                            <div className="flex items-start gap-3 min-w-0">
+                                                <div className="pt-0.5 shrink-0">
+                                                    <Checkbox 
+                                                        checked={selectedStudents.includes(s.id)}
+                                                        onCheckedChange={() => toggleStudentSelection(s.id)}
+                                                    />
+                                                </div>
+                                                <Avatar className={cn(
+                                                    "h-10 w-10 border font-black shrink-0",
+                                                    isVoceroPrincipal 
+                                                        ? "border-amber-500/60 bg-amber-500/15 text-amber-700 dark:text-amber-300 ring-2 ring-amber-500/30" 
+                                                        : isVoceroSuplente 
+                                                        ? "border-sky-500/60 bg-sky-500/15 text-sky-700 dark:text-sky-300 ring-2 ring-sky-500/30" 
+                                                        : "border-primary/20 bg-primary/10 text-primary"
+                                                )}>
+                                                    <AvatarImage src={s.image} />
+                                                    <AvatarFallback className="text-xs font-black">{s.name?.substring(0, 2).toUpperCase()}</AvatarFallback>
+                                                </Avatar>
+                                                <div className="min-w-0 flex-1">
+                                                    <div className="font-extrabold text-xs text-foreground flex items-center gap-1.5 flex-wrap">
+                                                        <span className="break-words leading-tight">{formatName(s.name, s.profile)}</span>
+                                                        <StudentNovedadBadge novedad={s.profile?.novedad} color={s.profile?.novedadColor} />
+                                                        <StudentVoceroBadge role={isVoceroPrincipal ? "PRINCIPAL" : isVoceroSuplente ? "SUPLENTE" : null} />
+                                                    </div>
+                                                    <div className="text-[11px] text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-1">
+                                                        <span className="font-mono">Doc: <strong className="text-foreground/90">{s.profile?.identificacion || "S/D"}</strong></span>
+                                                        {s.email && (
+                                                            <>
+                                                                <span className="text-muted-foreground/40">•</span>
+                                                                <span className="truncate max-w-[200px] text-[10.5px] text-muted-foreground/80">{s.email}</span>
+                                                            </>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            {/* Bottom Quick Actions Toolbar with all 5 table management options */}
+                                            <div className="grid grid-cols-5 gap-1.5 w-full border-t border-border/50 pt-2">
+                                                {/* 1. Email */}
+                                                <Button
+                                                    variant="ghost"
+                                                    size="sm"
+                                                    disabled={!s.email}
+                                                    className="h-8 px-1 flex-col items-center justify-center gap-0.5 text-[9px] font-bold text-primary bg-primary/10 rounded-xl hover:bg-primary/20 disabled:opacity-40"
+                                                    onClick={() => { if (s.email) window.location.href = `mailto:${s.email}`; }}
+                                                    title="Enviar correo"
+                                                >
+                                                    <Mail className="w-3.5 h-3.5" />
+                                                    <span>Correo</span>
+                                                </Button>
+
+                                                {/* 2. Academic Record / Analytics */}
+                                                <Button 
+                                                    variant="ghost"
+                                                    size="sm"
+                                                    className="h-8 px-1 flex-col items-center justify-center gap-0.5 text-[9px] font-bold text-primary bg-primary/10 rounded-xl hover:bg-primary/20"
+                                                    onClick={() => setSelectedStudentForAnalytics(s)}
+                                                    title="Registro Académico"
+                                                >
+                                                    <GraduationCap className="w-3.5 h-3.5" />
+                                                    <span>Registro</span>
+                                                </Button>
+
+                                                {/* 3. Password Reset */}
+                                                <Button 
+                                                    variant="ghost" 
+                                                    size="sm"
+                                                    className="h-8 px-1 flex-col items-center justify-center gap-0.5 text-[9px] font-bold text-amber-600 bg-amber-500/10 rounded-xl hover:bg-amber-500/20"
+                                                    onClick={() => {
+                                                        setStudentToResetPassword(s);
+                                                        setResetPasswordDialogOpen(true);
+                                                    }}
+                                                    disabled={isResetting}
+                                                    title="Resetear Contraseña"
+                                                >
+                                                    <Key className="w-3.5 h-3.5" />
+                                                    <span>Clave</span>
+                                                </Button>
+
+                                                {/* 4. Reset Daily Attempts */}
+                                                <Button 
+                                                    variant="ghost" 
+                                                    size="sm"
+                                                    className="h-8 px-1 flex-col items-center justify-center gap-0.5 text-[9px] font-bold text-primary bg-primary/10 rounded-xl hover:bg-primary/20"
+                                                    onClick={async () => {
+                                                        try {
+                                                            const res = await resetStudentDailyAttempts(s.id);
+                                                            if (res.success) {
+                                                                toast.success("Intentos diarios del aprendiz reiniciados.");
+                                                            } else {
+                                                                toast.error(res.error || "No se pudieron reiniciar los intentos.");
+                                                            }
+                                                        } catch (e) {
+                                                            toast.error("Error al conectar con el servidor.");
+                                                        }
+                                                    }}
+                                                    title="Reiniciar intentos diarios"
+                                                >
+                                                    <RefreshCw className="w-3.5 h-3.5" />
+                                                    <span>Intentos</span>
+                                                </Button>
+
+                                                {/* 5. Ban Request */}
+                                                <Button 
+                                                    variant="ghost" 
+                                                    size="sm"
+                                                    className="h-8 px-1 flex-col items-center justify-center gap-0.5 text-[9px] font-bold text-destructive bg-destructive/10 rounded-xl hover:bg-destructive/20"
+                                                    onClick={() => {
+                                                        setStudentToBan(s);
+                                                        setBanReasonText("");
+                                                        setBanRequestDialogOpen(true);
+                                                    }}
+                                                    title="Solicitar baneo"
+                                                >
+                                                    <ShieldAlert className="w-3.5 h-3.5" />
+                                                    <span>Baneo</span>
+                                                </Button>
+                                            </div>
+                                        </div>
+                                    ); })}
+                                    {filteredStudents.length === 0 && (
+                                        <div className="text-center py-8 text-muted-foreground text-xs bg-muted/20 rounded-2xl border border-dashed border-border">
+                                            No se encontraron aprendices
+                                        </div>
+                                    )}
+                                </div>
+
+                                {/* Desktop Table */}
+                                <div className="hidden sm:block rounded-2xl border border-border overflow-hidden bg-card shadow-xs">
+                                    <Table>
+                                        <TableHeader className="bg-muted/50 border-b border-border">
+                                            <TableRow className="hover:bg-transparent">
+                                                <TableHead className="w-[50px] text-center">
+                                                    <Checkbox 
+                                                        checked={filteredStudents.length > 0 && selectedStudents.length === filteredStudents.length}
+                                                        onCheckedChange={toggleAllStudents}
+                                                    />
+                                                </TableHead>
+                                                <TableHead className="font-extrabold text-[11px] uppercase tracking-wider text-muted-foreground">Aprendiz</TableHead>
+                                                <TableHead className="font-extrabold text-[11px] uppercase tracking-wider text-muted-foreground hidden md:table-cell">Documento</TableHead>
+                                                <TableHead className="font-extrabold text-[11px] uppercase tracking-wider text-muted-foreground hidden lg:table-cell">Contacto</TableHead>
+                                                <TableHead className="font-extrabold text-[11px] uppercase tracking-wider text-muted-foreground text-right pr-6">Acciones</TableHead>
+                                            </TableRow>
+                                        </TableHeader>
+                                        <TableBody>
+                                            {filteredStudents.map((s: any) => {
+                                                const isChecked = selectedStudents.includes(s.id);
+                                                const isVoceroPrincipal = s.id === selectedGroup?.voceroPrincipalId;
+                                                const isVoceroSuplente = s.id === selectedGroup?.voceroSuplenteId;
+                                                return (
+                                                    <TableRow 
+                                                        key={s.id} 
+                                                        className={cn(
+                                                            "transition-colors duration-150 border-b border-border/50",
+                                                            isChecked 
+                                                                ? "bg-primary/5 hover:bg-primary/10" 
+                                                                : isVoceroPrincipal
+                                                                ? "bg-amber-500/[0.05] hover:bg-amber-500/[0.09]"
+                                                                : isVoceroSuplente
+                                                                ? "bg-sky-500/[0.05] hover:bg-sky-500/[0.09]"
+                                                                : "hover:bg-muted/30"
+                                                        )}
+                                                    >
+                                                        <TableCell className="text-center py-3">
+                                                            <Checkbox 
+                                                                checked={isChecked}
+                                                                onCheckedChange={() => toggleStudentSelection(s.id)}
+                                                            />
+                                                        </TableCell>
+                                                        <TableCell className="py-3">
+                                                            <div className="flex items-center gap-3">
+                                                                <Avatar className={cn(
+                                                                    "h-9 w-9 border shadow-2xs shrink-0",
+                                                                    isVoceroPrincipal 
+                                                                        ? "border-amber-500/60 bg-amber-500/15 text-amber-700 dark:text-amber-300 ring-2 ring-amber-500/30" 
+                                                                        : isVoceroSuplente 
+                                                                        ? "border-sky-500/60 bg-sky-500/15 text-sky-700 dark:text-sky-300 ring-2 ring-sky-500/30" 
+                                                                        : "border-primary/20 bg-primary/10 text-primary"
+                                                                )}>
+                                                                    <AvatarImage src={s.image} />
+                                                                    <AvatarFallback className={cn(
+                                                                        "text-xs font-black",
+                                                                        isVoceroPrincipal 
+                                                                            ? "text-amber-700 dark:text-amber-300" 
+                                                                            : isVoceroSuplente 
+                                                                            ? "text-sky-700 dark:text-sky-300" 
+                                                                            : "text-primary"
+                                                                    )}>
+                                                                        {s.name?.substring(0, 2).toUpperCase()}
+                                                                    </AvatarFallback>
+                                                                </Avatar>
+                                                                <div className="flex flex-col">
+                                                                    <span className="font-bold text-sm text-foreground flex items-center gap-2 flex-wrap">
+                                                                        <span>{formatName(s.name, s.profile)}</span>
+                                                                        <StudentNovedadBadge novedad={s.profile?.novedad} color={s.profile?.novedadColor} />
+                                                                        <StudentVoceroBadge size="sm" role={isVoceroPrincipal ? "PRINCIPAL" : isVoceroSuplente ? "SUPLENTE" : null} />
+                                                                    </span>
+                                                                    <span className="text-[11px] text-muted-foreground font-mono md:hidden">
+                                                                        ID: {s.profile?.identificacion || "—"}
+                                                                    </span>
+                                                                </div>
+                                                            </div>
+                                                        </TableCell>
+                                                        <TableCell className="py-3 hidden md:table-cell">
+                                                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-md bg-muted/60 font-mono text-xs font-bold text-foreground border border-border/60">
+                                                                {s.profile?.identificacion || "—"}
+                                                            </span>
+                                                        </TableCell>
+                                                        <TableCell className="py-3 hidden lg:table-cell">
+                                                            {s.email ? (
+                                                                <a 
+                                                                    href={`mailto:${s.email}`} 
+                                                                    className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-primary transition-colors font-medium"
+                                                                >
+                                                                    <Mail className="w-3.5 h-3.5 text-muted-foreground/70 shrink-0" />
+                                                                    <span className="truncate max-w-[220px]">{s.email}</span>
+                                                                </a>
+                                                            ) : (
+                                                                <span className="text-xs text-muted-foreground/50 italic">Sin correo</span>
+                                                            )}
+                                                        </TableCell>
+                                                        <TableCell className="py-3 text-right pr-6">
+                                                            <div className="flex items-center justify-end gap-1.5">
+                                                                <Tooltip>
+                                                                    <TooltipTrigger asChild>
+                                                                        <Button
+                                                                            variant="ghost"
+                                                                            size="icon"
+                                                                            onClick={() => {
+                                                                                if (s.email) window.location.href = `mailto:${s.email}`;
+                                                                            }}
+                                                                            disabled={!s.email}
+                                                                            className="h-8 w-8 rounded-xl text-primary hover:bg-primary/10 border border-transparent hover:border-primary/20 transition-all disabled:opacity-30"
+                                                                        >
+                                                                            <Mail className="w-4 h-4" />
+                                                                        </Button>
+                                                                    </TooltipTrigger>
+                                                                    <TooltipContent className="font-bold text-xs"><p>Enviar correo</p></TooltipContent>
+                                                                </Tooltip>
+
+                                                                <Tooltip>
+                                                                    <TooltipTrigger asChild>
+                                                                        <Button 
+                                                                            variant="ghost" 
+                                                                            size="icon"
+                                                                            className="h-8 w-8 rounded-xl text-primary hover:bg-primary/10 border border-transparent hover:border-primary/20 transition-all"
+                                                                            onClick={() => setSelectedStudentForAnalytics(s)}
+                                                                        >
+                                                                            <GraduationCap className="w-4 h-4" />
+                                                                        </Button>
+                                                                    </TooltipTrigger>
+                                                                    <TooltipContent className="font-bold text-xs"><p>Registro Académico</p></TooltipContent>
+                                                                </Tooltip>
+
+                                                                <Tooltip>
+                                                                    <TooltipTrigger asChild>
+                                                                        <Button 
+                                                                            variant="ghost" 
+                                                                            size="icon" 
+                                                                            className="h-8 w-8 rounded-xl text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 border border-transparent hover:border-amber-500/20 transition-all"
+                                                                            onClick={() => {
+                                                                                setStudentToResetPassword(s);
+                                                                                setResetPasswordDialogOpen(true);
+                                                                            }}
+                                                                            disabled={isResetting}
+                                                                        >
+                                                                            <Key className="w-4 h-4" />
+                                                                        </Button>
+                                                                    </TooltipTrigger>
+                                                                    <TooltipContent className="font-bold text-xs"><p>Resetear Contraseña</p></TooltipContent>
+                                                                </Tooltip>
+
+                                                                <Tooltip>
+                                                                    <TooltipTrigger asChild>
+                                                                        <Button 
+                                                                            variant="ghost" 
+                                                                            size="icon" 
+                                                                            className="h-8 w-8 rounded-xl text-primary hover:bg-primary/10 border border-transparent hover:border-primary/20 transition-all"
+                                                                            onClick={async () => {
+                                                                                try {
+                                                                                    const res = await resetStudentDailyAttempts(s.id);
+                                                                                    if (res.success) {
+                                                                                        toast.success("Intentos diarios reiniciados.");
+                                                                                    } else {
+                                                                                        toast.error(res.error || "No se pudieron reiniciar los intentos.");
+                                                                                    }
+                                                                                } catch (e) {
+                                                                                    toast.error("Error al conectar con el servidor.");
+                                                                                }
+                                                                            }}
+                                                                        >
+                                                                            <RefreshCw className="w-4 h-4" />
+                                                                        </Button>
+                                                                    </TooltipTrigger>
+                                                                    <TooltipContent className="font-bold text-xs"><p>Reiniciar intentos diarios</p></TooltipContent>
+                                                                </Tooltip>
+
+                                                                <Tooltip>
+                                                                    <TooltipTrigger asChild>
+                                                                        <Button 
+                                                                            variant="ghost" 
+                                                                            size="icon" 
+                                                                            className="h-8 w-8 rounded-xl text-destructive hover:bg-destructive/10 border border-transparent hover:border-destructive/20 transition-all"
+                                                                            onClick={() => {
+                                                                                setStudentToBan(s);
+                                                                                setBanReasonText("");
+                                                                                setBanRequestDialogOpen(true);
+                                                                            }}
+                                                                        >
+                                                                            <ShieldAlert className="w-4 h-4" />
+                                                                        </Button>
+                                                                    </TooltipTrigger>
+                                                                    <TooltipContent className="font-bold text-xs"><p>Solicitar baneo al administrador</p></TooltipContent>
+                                                                </Tooltip>
+                                                            </div>
+                                                        </TableCell>
+                                                    </TableRow>
+                                                );
+                                            })}
+                                            {filteredStudents.length === 0 && (
+                                                <TableRow>
+                                                    <TableCell colSpan={5} className="text-center py-12 text-muted-foreground text-sm font-medium">
+                                                        No se encontraron aprendices que coincidan con la búsqueda
+                                                    </TableCell>
+                                                </TableRow>
+                                            )}
+                                        </TableBody>
+                                    </Table>
+                                </div>
+                            </TabsContent>
+
+                            {/* TAB: ANALYTICS */}
+                            <TabsContent value="analytics" className="m-0 h-full outline-none p-0 flex flex-col animate-in fade-in-50 duration-200">
+                                <GroupAnalyticsPanel 
+                                    inline={true}
+                                    isTeacher={true}
+                                    isLoading={loadingAnalytics}
+                                    analyticsData={fullAnalyticsData}
+                                />
+                            </TabsContent>
+
+                            {/* TAB: GRADES */}
+                            <TabsContent value="grades" className="m-0 outline-none w-full min-w-0 max-w-full animate-in fade-in-50 duration-200">
+                                <GradeManagerPanel 
+                                    courses={selectedGroup.courses || []}
+                                    students={filteredStudents}
+                                    voceroPrincipalId={selectedGroup.voceroPrincipalId}
+                                    voceroSuplenteId={selectedGroup.voceroSuplenteId}
+                                    group={selectedGroup}
+                                    attendanceHistory={attendanceHistory}
+                                />
+                            </TabsContent>
+
+                            {/* TAB: DOCUMENTATION */}
+                            <TabsContent value="documentation" className="m-0 outline-none w-full min-w-0 space-y-6 animate-in fade-in-50 duration-200">
+                                {/* Header Hero Banner */}
+                                <div className="bg-primary/5 border border-primary/20 rounded-2xl sm:rounded-3xl p-4 sm:p-6 lg:p-7 relative overflow-hidden shadow-2xs">
+                                    <BookOpen className="absolute right-0 top-0 w-64 h-64 text-primary/5 -translate-y-1/4 translate-x-1/4 pointer-events-none" />
+                                    <div className="relative z-10 space-y-1">
+                                        <h3 className="text-xl sm:text-2xl font-black text-foreground tracking-tight">Documentación y Recursos</h3>
+                                        <p className="text-xs text-muted-foreground max-w-2xl">
+                                            Material de apoyo pedagógico, enlaces compartidos y guías de aprendizaje organizadas por materia para la ficha <span className="font-extrabold text-foreground">{selectedGroup.name}</span>.
+                                        </p>
+                                    </div>
+                                </div>
+
+                                {!selectedGroup.courses || selectedGroup.courses.length === 0 ? (
+                                    <div className="flex flex-col items-center justify-center py-20 text-center space-y-3 rounded-2xl border-2 border-dashed border-border/70 bg-card">
+                                        <BookOpen className="h-10 w-10 text-muted-foreground/40" />
+                                        <p className="text-muted-foreground font-medium">No hay materias asignadas a este grupo</p>
+                                    </div>
+                                ) : (
+                                    selectedGroup.courses.map((course: any) => (
+                                        <div key={course.id} className="rounded-2xl border border-border/60 bg-card shadow-sm overflow-hidden">
+                                            {/* Course header */}
+                                            <div className="flex items-center gap-3 px-5 py-4 bg-muted/20 border-b border-border/40">
+                                                <div className="p-2 bg-primary/10 rounded-lg shrink-0">
+                                                    <BookOpen className="w-4 h-4 text-primary" />
+                                                </div>
+                                                <div className="min-w-0">
+                                                    <h3 className="font-black text-base leading-tight text-foreground">{course.title}</h3>
+                                                    {course.teacher && (
+                                                        <p className="text-xs text-muted-foreground mt-0.5">
+                                                            {course.teacher.profile?.nombres
+                                                                ? `${course.teacher.profile.nombres} ${course.teacher.profile.apellido || ""}`.trim()
+                                                                : course.teacher.name}
+                                                        </p>
+                                                    )}
+                                                </div>
+                                            </div>
+                                            {/* CourseDocLinks per materia */}
+                                            <div className="p-5">
+                                                <CourseDocLinks
+                                                    key={course.id}
+                                                    courseId={course.id}
+                                                    initialContent={course.sharedContent || []}
+                                                />
+                                            </div>
+                                        </div>
+                                    ))
+                                )}
+                            </TabsContent>
+
+                            {/* TAB 2: ATTENDANCE */}
+                            <TabsContent value="attendance" className="m-0 space-y-4 outline-none animate-in fade-in-50 duration-200">
+                                {/* Header Controls for Attendance — single compact row */}
+                                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 bg-muted/20 p-3 sm:p-4 rounded-2xl border border-border/70 shadow-2xs">
+
+                                    {/* Course */}
+                                    <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 w-full lg:w-auto min-w-0">
+                                        <div className="flex items-center gap-2.5 px-3 py-1.5 rounded-xl bg-primary/10 dark:bg-primary/20 border border-primary/25 shrink-0 shadow-2xs">
+                                            <div className="p-1 rounded-lg bg-primary text-primary-foreground shadow-xs">
+                                                <BookOpen className="w-3.5 h-3.5" />
+                                            </div>
+                                            <div className="flex flex-col min-w-0">
+                                                <span className="text-[9px] font-black uppercase tracking-widest text-primary/80 leading-none">
+                                                    Materia Seleccionada
+                                                </span>
+                                                <span className="text-xs font-black text-foreground truncate max-w-[180px] sm:max-w-[240px] leading-tight mt-0.5">
+                                                    {selectedGroup.courses?.find((c: any) => c.id === attCourseId)?.title || "Sin materia"}
+                                                </span>
+                                            </div>
+                                        </div>
+                                        <Select disabled={isSavingAtt || isLoadingAttendance} value={attCourseId} onValueChange={handleCourseChangeAttempt}>
+                                            <SelectTrigger className="h-9 rounded-xl border-primary/30 font-extrabold bg-background text-xs sm:text-sm w-full lg:min-w-[190px] lg:max-w-[280px] shadow-2xs hover:border-primary transition-colors">
+                                                <SelectValue placeholder="Cambiar Materia" />
+                                            </SelectTrigger>
+                                            <SelectContent className="rounded-2xl shadow-xl">
+                                                {selectedGroup.courses?.map((c: any) => (
+                                                    <SelectItem key={c.id} value={c.id} className="font-semibold cursor-pointer rounded-xl">{c.title}</SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+
+                                    {/* Navigation and Actions Wrapper */}
+                                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 w-full lg:w-auto min-w-0">
+                                        {/* View mode pills */}
+                                        <div 
+                                            className="w-full overflow-x-auto overflow-y-hidden overscroll-x-contain overscroll-y-auto scrollbar-none pb-1 sm:pb-0"
+                                            style={{
+                                                WebkitOverflowScrolling: "touch",
+                                                touchAction: "pan-x pan-y",
+                                                overscrollBehaviorX: "contain",
+                                                overscrollBehaviorY: "auto"
+                                            }}
+                                        >
+                                            <div className="inline-flex w-max items-center gap-1 bg-muted/60 dark:bg-muted/40 p-1 rounded-xl border border-border/60 shadow-2xs">
+                                                <div className="flex items-center gap-0.5">
+                                                    {([
+                                                        { mode: "list",    icon: <ListTodo className="w-3.5 h-3.5" />, label: "Listado" },
+                                                        { mode: "summary", icon: <ClipboardList className="w-3.5 h-3.5" />, label: "Resumen" },
+                                                     ] as const).map(({ mode, icon, label }) => (
+                                                        <button
+                                                            key={mode}
+                                                            disabled={isSavingAtt || isLoadingAttendance}
+                                                            onClick={() => setAttMode(mode)}
+                                                            className={`flex items-center gap-1.5 px-3 h-7.5 rounded-lg text-xs font-bold transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
+                                                                attMode === mode
+                                                                    ? "bg-card shadow-xs text-primary font-extrabold border border-border/50"
+                                                                    : "text-muted-foreground hover:text-foreground"
+                                                            }`}
+                                                        >
+                                                            {icon}
+                                                            <span>{label}</span>
+                                                        </button>
+                                                    ))}
+                                                </div>
+
+                                                {/* Divider */}
+                                                <div className="w-px h-5 bg-border/60 mx-0.5 shrink-0" />
+
+                                                {/* Group 2: Planilla / Historial / Métricas */}
+                                                <div className="flex items-center gap-0.5">
+                                                    {([
+                                                        { mode: "matrix",  icon: <LayoutList className="w-3.5 h-3.5" />, label: "Planilla" },
+                                                        { mode: "history", icon: <History className="w-3.5 h-3.5" />, label: "Historial" },
+                                                        { mode: "metrics", icon: <BarChart3 className="w-3.5 h-3.5" />, label: "Métricas" },
+                                                    ] as const).map(({ mode, icon, label }) => (
+                                                        <button
+                                                            key={mode}
+                                                            disabled={isSavingAtt || isLoadingAttendance}
+                                                            onClick={() => setAttMode(mode)}
+                                                            className={`flex items-center gap-1.5 px-3 h-7.5 rounded-lg text-xs font-bold transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+                                                                attMode === mode
+                                                                    ? "bg-background shadow-xs text-foreground"
+                                                                    : "text-muted-foreground hover:text-foreground"
+                                                            }`}
+                                                        >
+                                                            {icon}
+                                                            <span>{label}</span>
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        {/* Action buttons */}
+                                        <div className="flex items-center gap-2 w-full sm:w-auto shrink-0 justify-end">
+                                            {/* Play Sequential button */}
+                                            <Button
+                                                onClick={startSequentialFullscreen}
+                                                variant="outline"
+                                                disabled={!attCourseId || isSavingAtt || isLoadingAttendance}
+                                                className="w-full sm:w-auto h-9 px-3 rounded-xl font-bold text-xs gap-1.5 shrink-0 border-primary/20 hover:bg-primary/5 text-primary shadow-xs"
+                                            >
+                                                <Play className="w-3.5 h-3.5" />
+                                                <span className="hidden sm:inline">Llamar por Secuencia</span>
+                                                <span className="sm:hidden">Secuencia</span>
+                                            </Button>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                 {/* Dedicated Date Selection Bar */}
+                                {attMode !== "matrix" && attMode !== "history" && attMode !== "metrics" && (
+                                    <div className="flex flex-col gap-2 bg-muted/10 p-4 rounded-2xl border border-border/70 w-full shadow-2xs">
+                                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 w-full mb-1">
+                                            <div className="flex flex-wrap items-center gap-2.5">
+                                                <Label className="font-bold text-[10px] uppercase tracking-widest text-muted-foreground">Fecha de Asistencia</Label>
+                                                <Button
+                                                    size="sm"
+                                                    variant={attDate === getTodayColombianDate() ? "default" : "outline"}
+                                                    type="button"
+                                                    disabled={isSavingAtt || isLoadingAttendance}
+                                                    onClick={() => handleDateChangeAttempt(getTodayColombianDate())}
+                                                    className={`h-7 px-2.5 text-[11px] font-black rounded-xl gap-1.5 transition-all cursor-pointer shadow-xs ${
+                                                        attDate === getTodayColombianDate()
+                                                            ? "bg-primary text-primary-foreground hover:bg-primary/90 ring-2 ring-primary/20"
+                                                            : "border-primary/40 text-primary hover:bg-primary/10"
+                                                    }`}
+                                                    title="Ir a la fecha actual (Hoy)"
+                                                >
+                                                    <CalendarClock className="w-3.5 h-3.5" />
+                                                    Hoy
+                                                </Button>
+                                            </div>
+                                        </div>
+                                        <div className="flex flex-wrap gap-1.5 p-1.5 bg-background rounded-xl border border-border/70 shadow-2xs max-h-[120px] overflow-y-auto">
+                                            {(() => {
+                                                const validDaysList = getValidClassDaysList();
+                                                const todayStr = getTodayColombianDate();
+
+                                                if (validDaysList.length === 0) {
+                                                    return (
+                                                        <span className="text-xs text-muted-foreground italic px-2 py-1">
+                                                            No hay fechas de clase programadas para mostrar.
+                                                        </span>
+                                                    );
+                                                }
+
+                                                return validDaysList.map((ds) => {
+                                                    const d = new Date(ds + "T12:00:00Z");
+                                                    const dayNamesShort = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
+                                                    const label = `${dayNamesShort[d.getUTCDay()]} ${String(d.getUTCDate()).padStart(2, "0")}/${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+                                                    const isFuture = ds > todayStr;
+                                                    const isSelected = ds === attDate;
+                                                    const isToday = ds === todayStr;
+                                                    const holidayName = getColombianHolidayName(ds);
+                                                    const isHoliday = !!holidayName;
+
+                                                    return (
+                                                        <Button
+                                                            key={ds}
+                                                            size="sm"
+                                                            variant={isSelected ? (isHoliday ? "destructive" : "default") : "outline"}
+                                                            disabled={isFuture || isSavingAtt || isLoadingAttendance}
+                                                            type="button"
+                                                            onClick={() => handleDateChangeAttempt(ds)}
+                                                            className={`h-7 px-2 sm:px-2.5 text-[10px] sm:text-xs font-bold transition-all rounded-lg shrink-0 cursor-pointer ${
+                                                                isSelected 
+                                                                    ? isHoliday
+                                                                        ? "shadow-sm font-extrabold bg-rose-600 hover:bg-rose-700 text-white border-rose-600 ring-2 ring-rose-400/40"
+                                                                        : "shadow-sm font-extrabold bg-primary text-primary-foreground" 
+                                                                    : isHoliday
+                                                                        ? "border-rose-300 dark:border-rose-800 text-rose-600 dark:text-rose-400 bg-rose-50/50 dark:bg-rose-950/20 hover:bg-rose-100 dark:hover:bg-rose-900/40 font-extrabold"
+                                                                        : isToday
+                                                                            ? "border-primary/40 text-primary hover:bg-primary/10 font-extrabold"
+                                                                            : "text-muted-foreground hover:text-foreground border-border/70"
+                                                            }`}
+                                                            title={
+                                                                isHoliday 
+                                                                    ? `Día Festivo: ${holidayName} (Bloqueado para asistencia)`
+                                                                    : isFuture 
+                                                                        ? "Fecha futura (deshabilitada)" 
+                                                                        : isToday 
+                                                                            ? `Hoy (${ds})` 
+                                                                            : `Seleccionar ${ds}`
+                                                            }
+                                                        >
+                                                            {isToday ? `Hoy (${label})` : label}
+                                                            {isHoliday && (
+                                                                <span className="ml-1 text-[9px] px-1 py-0.2 rounded bg-rose-200/80 dark:bg-rose-900/60 text-rose-900 dark:text-rose-200 font-black">
+                                                                    Festivo
+                                                                </span>
+                                                            )}
+                                                        </Button>
+                                                    );
+                                                });
+                                            })()}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {isLoadingAttendance ? (
+                                    <div className="flex flex-col items-center justify-center py-24 px-4 bg-card/60 backdrop-blur-xs border border-border/70 rounded-2xl shadow-2xs gap-3 animate-in fade-in-50 duration-200 min-h-[350px]">
+                                        <LoadingSpinner message="Cargando asistencias de la ficha..." size="lg" className="p-0" />
+                                        <span className="text-xs font-semibold text-muted-foreground animate-pulse">
+                                            Sincronizando registros de asistencia con el sistema...
+                                        </span>
+                                    </div>
+                                ) : !isCurrentDateValid && (attMode === "list" || attMode === "summary") ? (
+                                    <div className="flex flex-col items-center justify-center p-8 sm:p-12 border-2 border-dashed border-amber-300 dark:border-amber-800/60 bg-amber-50/60 dark:bg-amber-950/20 rounded-3xl text-center space-y-4 max-w-2xl mx-auto my-6 shadow-xs animate-in fade-in-50 duration-200">
+                                        <div className="p-4 bg-amber-100 dark:bg-amber-900/50 text-amber-700 dark:text-amber-300 rounded-2xl shadow-2xs">
+                                            <CalendarX className="w-10 h-10" />
+                                        </div>
+                                        <div className="space-y-2 max-w-lg">
+                                            <h4 className="font-black text-lg sm:text-xl text-foreground tracking-tight">
+                                                {isColombianHoliday(attDate)
+                                                    ? `Día Festivo Oficial: ${getColombianHolidayName(attDate)}`
+                                                    : attDate === getTodayColombianDate()
+                                                        ? "Hoy no tienes sesión de clase programada para esta ficha"
+                                                        : "Fecha no Programada para este Curso"}
+                                            </h4>
+                                            <p className="text-xs sm:text-sm text-muted-foreground leading-relaxed">
+                                                {isColombianHoliday(attDate)
+                                                    ? "La fecha seleccionada corresponde a un día festivo oficial en Colombia. Por normativa institucional y legal, no se programa jornada académica ni se habilita toma de asistencia."
+                                                    : attDate === getTodayColombianDate()
+                                                        ? "Para el día de hoy no hay una sesión o ficha programada con esta materia en el horario vigente. Por este motivo no se habilitan aprendices para llamar asistencia hoy."
+                                                        : "La fecha seleccionada no corresponde a un día de clase según el horario programado para esta materia."}
+                                            </p>
+                                        </div>
+
+                                        {otherGroupsWithClassToday.length > 0 && (
+                                            <div className="pt-2 w-full max-w-md">
+                                                <div className="p-3.5 bg-background/90 dark:bg-card/80 border border-border/80 rounded-2xl shadow-xs text-left space-y-2">
+                                                    <p className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                                                        <CalendarDays className="w-3.5 h-3.5 text-primary" />
+                                                        Tienes clase programada hoy en otra ficha:
+                                                    </p>
+                                                    <div className="flex flex-wrap gap-2 pt-1">
+                                                        {otherGroupsWithClassToday.map((og: any) => (
+                                                            <Button
+                                                                key={og.id}
+                                                                size="sm"
+                                                                variant="outline"
+                                                                type="button"
+                                                                onClick={() => handleGroupChangeAttempt(og.id)}
+                                                                className="h-8 text-xs font-bold rounded-xl border-primary/30 text-primary hover:bg-primary/10 gap-1.5 cursor-pointer"
+                                                            >
+                                                                <Users className="w-3 h-3" />
+                                                                Ir a ficha {og.name}
+                                                                <ArrowRight className="w-3 h-3 ml-0.5" />
+                                                            </Button>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        <div className="pt-2 flex flex-wrap items-center justify-center gap-2 text-xs text-muted-foreground">
+                                            <span>¿Deseas revisar o editar asistencias de clases pasadas?</span>
+                                            <span className="font-semibold text-foreground">
+                                                Selecciona cualquiera de las fechas habilitadas en la barra superior.
+                                            </span>
+                                        </div>
+                                    </div>
+                                ) : attMode === "list" ? (
+                                    // MODE 1: LIST VIEW
+                                    <div className="space-y-4">
+                                        <div className="flex flex-col sm:flex-row items-center justify-between gap-2.5 mb-2 w-full">
+                                            <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-card border border-border/80 shadow-2xs w-full sm:w-auto">
+                                                <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+                                                <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider shrink-0">
+                                                    Materia:
+                                                </span>
+                                                <span className="text-xs sm:text-sm font-black text-foreground truncate max-w-[260px] sm:max-w-[420px]">
+                                                    {selectedGroup.courses?.find((c: any) => c.id === attCourseId)?.title || "Sin materia seleccionada"}
+                                                </span>
+                                            </div>
+                                            <div className="flex items-center gap-1.5 flex-wrap text-xs font-bold justify-end w-full sm:w-auto">
+                                                <span className="px-2.5 py-0.5 rounded-lg bg-emerald-100/70 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300 border border-emerald-200/60 dark:border-emerald-800/40">
+                                                    {Object.values(attRecords).filter(r => r.status === "PRESENT" && !r.arrivalTime && !r.departureTime).length} Presentes
+                                                </span>
+                                                <span className="px-2.5 py-0.5 rounded-lg bg-rose-100/70 text-rose-800 dark:bg-rose-950/40 dark:text-rose-300 border border-rose-200/60 dark:border-rose-800/40">
+                                                    {Object.values(attRecords).filter(r => r.status === "ABSENT").length} Faltas
+                                                </span>
+                                                <span className="px-2.5 py-0.5 rounded-lg bg-amber-100/70 text-amber-900 dark:bg-amber-950/40 dark:text-amber-300 border border-amber-200/60 dark:border-amber-800/40">
+                                                    {Object.values(attRecords).filter(r => r.status === "LATE" || !!r.arrivalTime).length} Tardes
+                                                </span>
+                                                <span className="px-2.5 py-0.5 rounded-lg bg-sky-100/70 text-sky-900 dark:bg-sky-950/40 dark:text-sky-300 border border-sky-200/60 dark:border-sky-800/40">
+                                                    {Object.values(attRecords).filter(r => r.status === "LEAVE_EARLY" || !!r.departureTime).length} Retiros
+                                                </span>
+                                            </div>
+                                        </div>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                                            {filteredStudents.map((s: any) => {
+                                                const rec = attRecords[s.id];
+                                                const isLate = !!rec?.arrivalTime || rec?.status === "LATE";
+                                                const isLeaveEarly = !!rec?.departureTime || rec?.status === "LEAVE_EARLY";
+                                                const isDualLateAndLeave = isLate && isLeaveEarly;
+                                                const isAbsent = (rec?.status === "ABSENT") && !isLate && !isLeaveEarly;
+                                                const isPresent = (rec?.status === "PRESENT") && !isLate && !isLeaveEarly;
+                                                
+                                                const { absentCount, lateCount, leaveCount, allTimeAbsentCount } = studentAttendanceStats[s.id] || { absentCount: 0, lateCount: 0, leaveCount: 0, allTimeAbsentCount: 0 };
+
+                                                 return (
+                                                    <div 
+                                                        key={s.id} 
+                                                        className={`p-2.5 sm:p-3.5 rounded-xl border transition-all duration-200 shadow-xs ${
+                                                            isDualLateAndLeave
+                                                                ? 'bg-gradient-to-r from-amber-50/50 via-background to-sky-50/50 dark:from-amber-950/20 dark:via-background dark:to-sky-950/20 border-amber-300/80 dark:border-amber-700/60 shadow-amber-500/5'
+                                                                : isAbsent 
+                                                                    ? 'bg-rose-50/40 border-rose-200/70 dark:bg-rose-950/15 dark:border-rose-900/40' 
+                                                                    : isLate 
+                                                                        ? 'bg-amber-50/40 border-amber-200/70 dark:bg-amber-950/15 dark:border-amber-900/40' 
+                                                                        : isLeaveEarly
+                                                                            ? 'bg-sky-50/40 border-sky-200/70 dark:bg-sky-950/15 dark:border-sky-900/40'
+                                                                            : isPresent
+                                                                                ? 'bg-emerald-50/40 border-emerald-200/70 dark:bg-emerald-950/15 dark:border-emerald-900/40'
+                                                                                : 'bg-muted/15 border-muted/70 hover:border-muted-foreground/30 dark:bg-muted/10 dark:border-muted/30 dark:hover:border-muted/50 border-dashed'
+                                                        }`}
+                                                    >
+                                                        {/* Header: Name, ID, Historial */}
+                                                        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2 mb-2.5">
+                                                            <div className="min-w-0">
+                                                                <div 
+                                                                    className={`font-semibold text-sm break-words ${
+                                                                        isDualLateAndLeave
+                                                                            ? 'text-foreground'
+                                                                            : isAbsent 
+                                                                                ? 'text-rose-950 dark:text-rose-200' 
+                                                                                : isLate 
+                                                                                    ? 'text-amber-950 dark:text-amber-200' 
+                                                                                    : isLeaveEarly
+                                                                                        ? 'text-sky-950 dark:text-sky-200'
+                                                                                        : isPresent
+                                                                                            ? 'text-emerald-950 dark:text-emerald-200'
+                                                                                            : 'text-foreground'
+                                                                    }`}
+                                                                >
+                                                                    <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
+                                                                        <span className="truncate">{formatName(s.name, s.profile)}</span>
+                                                                        <StudentNovedadBadge novedad={s.profile?.novedad} color={s.profile?.novedadColor} />
+                                                                        <StudentVoceroBadge size="sm" role={s.id === selectedGroup?.voceroPrincipalId ? "PRINCIPAL" : s.id === selectedGroup?.voceroSuplenteId ? "SUPLENTE" : null} />
+                                                                        {isDualLateAndLeave && (
+                                                                            <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 dark:bg-amber-950/40 dark:text-amber-200 border border-amber-300 dark:border-amber-700/60">
+                                                                                Tarde + Retiro
+                                                                            </span>
+                                                                        )}
+                                                                    </div>
+                                                                </div>
+                                                                <div className="flex items-center gap-1.5 flex-wrap text-[11px] mt-0.5">
+                                                                    <span className="font-mono text-muted-foreground">
+                                                                        ID: {s.profile?.identificacion || 'S/N'}
+                                                                    </span>
+                                                                    {(absentCount > 0 || lateCount > 0 || leaveCount > 0) && (
+                                                                        <span className="inline-flex items-center gap-1 flex-wrap">
+                                                                            <span className="text-muted-foreground/35 font-normal">|</span>
+                                                                            {absentCount > 0 && (
+                                                                                <span 
+                                                                                    className="text-[10px] font-bold text-rose-700 dark:text-rose-300 bg-rose-100/70 dark:bg-rose-950/40 border border-rose-200/60 dark:border-rose-800/40 px-1.5 py-0.2 rounded-md inline-flex items-center cursor-help"
+                                                                                    title={allTimeAbsentCount > absentCount
+                                                                                        ? `${absentCount} inasistencia${absentCount > 1 ? 's' : ''} en el horario actual (${allTimeAbsentCount} en total)`
+                                                                                        : `${absentCount} inasistencia${absentCount > 1 ? 's' : ''} en el horario actual`
+                                                                                    }
+                                                                                >
+                                                                                    {absentCount} {absentCount === 1 ? 'Falta' : 'Faltas'}
+                                                                                </span>
+                                                                            )}
+                                                                            {lateCount > 0 && (
+                                                                                <span 
+                                                                                    className="text-[10px] font-bold text-amber-800 dark:text-amber-300 bg-amber-100/70 dark:bg-amber-950/40 border border-amber-200/60 dark:border-amber-800/40 px-1.5 py-0.2 rounded-md inline-flex items-center cursor-help"
+                                                                                    title={`${lateCount} llegada${lateCount > 1 ? 's' : ''} tarde en el horario actual`}
+                                                                                >
+                                                                                    {lateCount} {lateCount === 1 ? 'Tarde' : 'Tardes'}
+                                                                                </span>
+                                                                            )}
+                                                                            {leaveCount > 0 && (
+                                                                                <span 
+                                                                                    className="text-[10px] font-bold text-sky-800 dark:text-sky-300 bg-sky-100/70 dark:bg-sky-950/40 border border-sky-200/60 dark:border-sky-800/40 px-1.5 py-0.2 rounded-md inline-flex items-center cursor-help"
+                                                                                    title={`${leaveCount} retiro${leaveCount > 1 ? 's' : ''} anticipado en el horario actual`}
+                                                                                >
+                                                                                    {leaveCount} {leaveCount === 1 ? 'Retiro' : 'Retiros'}
+                                                                                </span>
+                                                                            )}
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+
+                                                            {/* History button / indicator */}
+                                                            <div className="flex items-center gap-1.5 shrink-0 self-start">
+                                                                <Button
+                                                                    variant="ghost"
+                                                                    size="sm"
+                                                                    className="h-6 px-1.5 text-[10px] font-bold text-muted-foreground/60 hover:text-muted-foreground hover:bg-muted/40 rounded-md flex items-center gap-1"
+                                                                    onClick={() => handleShowStudentDetails(s)}
+                                                                    title="Ver historial de inasistencias"
+                                                                >
+                                                                    <Eye className="w-3 h-3" />
+                                                                    <span>Historial</span>
+                                                                </Button>
+                                                            </div>
+                                                        </div>
+
+                                                        {/* Quick Actions Row: Stacked on mobile for complete text, horizontal on tablet/desktop */}
+                                                        <div className="grid grid-cols-4 gap-1 sm:gap-1.5 w-full">
+                                                            {/* PRESENTE */}
+                                                            <Button 
+                                                                size="sm"
+                                                                disabled={isSavingAtt}
+                                                                variant="ghost"
+                                                                className={`h-11 sm:h-8.5 px-0.5 sm:px-1.5 flex-col sm:flex-row gap-0.5 sm:gap-1.5 text-[9.5px] sm:text-xs rounded-xl transition-all border ${
+                                                                    isPresent 
+                                                                        ? 'bg-emerald-100 hover:bg-emerald-200/80 text-emerald-800 border-emerald-300 dark:bg-emerald-950/60 dark:text-emerald-200 dark:border-emerald-700/60 shadow-xs font-black ring-1 ring-emerald-400/25' 
+                                                                        : 'bg-background text-muted-foreground hover:text-emerald-700 hover:bg-emerald-50/70 hover:border-emerald-200 dark:hover:text-emerald-300 dark:hover:bg-emerald-950/30 dark:hover:border-emerald-800/40 border-border/70 font-bold'
+                                                                }`}
+                                                                onClick={() => setStudentAttendance(s.id, isPresent ? "UNMARKED" : "PRESENT")}
+                                                            >
+                                                                <UserCheck className="size-3.5 shrink-0" />
+                                                                <span>Presente</span>
+                                                            </Button>
+
+                                                            {/* FALTA */}
+                                                            <Button 
+                                                                size="sm"
+                                                                disabled={isSavingAtt}
+                                                                variant="ghost"
+                                                                className={`h-11 sm:h-8.5 px-0.5 sm:px-1.5 flex-col sm:flex-row gap-0.5 sm:gap-1.5 text-[9.5px] sm:text-xs rounded-xl transition-all border ${
+                                                                    isAbsent 
+                                                                        ? 'bg-rose-100 hover:bg-rose-200/80 text-rose-800 border-rose-300 dark:bg-rose-950/60 dark:text-rose-200 dark:border-rose-700/60 shadow-xs font-black ring-1 ring-rose-400/25' 
+                                                                        : 'bg-background text-muted-foreground hover:text-rose-700 hover:bg-rose-50/70 hover:border-rose-200 dark:hover:text-rose-300 dark:hover:bg-rose-950/30 dark:hover:border-rose-800/40 border-border/70 font-bold'
+                                                                }`}
+                                                                onClick={() => setStudentAttendance(s.id, isAbsent ? "UNMARKED" : "ABSENT")}
+                                                            >
+                                                                <UserX className="size-3.5 shrink-0" />
+                                                                <span>Falta</span>
+                                                            </Button>
+
+                                                            {/* TARDE */}
+                                                            <Button 
+                                                                size="sm"
+                                                                disabled={isSavingAtt}
+                                                                variant="ghost"
+                                                                className={`h-11 sm:h-8.5 px-0.5 sm:px-1.5 flex-col sm:flex-row gap-0.5 sm:gap-1.5 text-[9.5px] sm:text-xs rounded-xl transition-all border ${
+                                                                    isLate 
+                                                                        ? 'bg-amber-100 hover:bg-amber-200/80 text-amber-900 border-amber-300 dark:bg-amber-950/60 dark:text-amber-200 dark:border-amber-700/60 shadow-xs font-black ring-1 ring-amber-400/25' 
+                                                                        : 'bg-background text-muted-foreground hover:text-amber-800 hover:bg-amber-50/70 hover:border-amber-200 dark:hover:text-amber-300 dark:hover:bg-amber-950/30 dark:hover:border-amber-800/40 border-border/70 font-bold'
+                                                                }`}
+                                                                onClick={() => toggleLateOrLeaveEarly(s.id, "LATE")}
+                                                            >
+                                                                <Clock className="size-3.5 shrink-0" />
+                                                                <span>Tarde</span>
+                                                            </Button>
+
+                                                            {/* RETIRO */}
+                                                            <Button 
+                                                                size="sm"
+                                                                disabled={isSavingAtt}
+                                                                variant="ghost"
+                                                                className={`h-11 sm:h-8.5 px-0.5 sm:px-1.5 flex-col sm:flex-row gap-0.5 sm:gap-1.5 text-[9.5px] sm:text-xs rounded-xl transition-all border ${
+                                                                    isLeaveEarly 
+                                                                        ? 'bg-sky-100 hover:bg-sky-200/80 text-sky-900 border-sky-300 dark:bg-sky-950/60 dark:text-sky-200 dark:border-sky-700/60 shadow-xs font-black ring-1 ring-sky-400/25' 
+                                                                        : 'bg-background text-muted-foreground hover:text-sky-800 hover:bg-sky-50/70 hover:border-sky-200 dark:hover:text-sky-300 dark:hover:bg-sky-950/30 dark:hover:border-sky-800/40 border-border/70 font-bold'
+                                                                }`}
+                                                                onClick={() => toggleLateOrLeaveEarly(s.id, "LEAVE_EARLY")}
+                                                            >
+                                                                <LogOut className="size-3.5 shrink-0" />
+                                                                <span>Retiro</span>
+                                                            </Button>
+                                                        </div>
+
+                                                        {/* Time input nested if Late */}
+                                                        <AnimatePresence>
+                                                            {isLate && (() => {
+                                                                const lostInfo = getLostHoursForAttendance(
+                                                                    currentSessionTimeOptions.sessionStart,
+                                                                    currentSessionTimeOptions.sessionEnd,
+                                                                    rec?.arrivalTime,
+                                                                    rec?.departureTime
+                                                                );
+                                                                return (
+                                                                    <motion.div 
+                                                                        initial={{ opacity: 0, height: 0, marginTop: 0 }} 
+                                                                        animate={{ opacity: 1, height: "auto", marginTop: 8 }} 
+                                                                        exit={{ opacity: 0, height: 0, marginTop: 0 }}
+                                                                        className="overflow-hidden"
+                                                                    >
+                                                                        <div className="flex flex-col gap-1.5 p-2 rounded-lg bg-amber-100/50 dark:bg-amber-950/20 border border-amber-200/60 dark:border-amber-900/40">
+                                                                            <div className="flex items-center justify-between gap-2">
+                                                                                <span className="text-[10px] font-bold text-amber-800 dark:text-amber-300 pl-1">Hora Ingreso:</span>
+                                                                                <select
+                                                                                    disabled={isSavingAtt}
+                                                                                    className="h-6 w-[115px] rounded-md border border-amber-300 dark:border-amber-900/60 bg-white dark:bg-black text-[10px] font-bold text-amber-900 dark:text-amber-200 px-1 outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                                                                                    value={rec?.arrivalTime || ""}
+                                                                                    onChange={e => updateLateTime(s.id, e.target.value)}
+                                                                                >
+                                                                                    <option value="" disabled>Seleccione...</option>
+                                                                                    {rec?.arrivalTime && !currentSessionTimeOptions.lateOptions.includes(rec.arrivalTime) && (
+                                                                                        <option value={rec.arrivalTime}>{rec.arrivalTime} (Fuera de rango)</option>
+                                                                                    )}
+                                                                                    {currentSessionTimeOptions.lateOptions.map(time => (
+                                                                                        <option key={time} value={time}>
+                                                                                            {time}
+                                                                                        </option>
+                                                                                    ))}
+                                                                                </select>
+                                                                            </div>
+                                                                            <div className="flex justify-between items-center text-[10px] font-bold text-amber-800 dark:text-amber-300 px-1 border-t border-amber-200/30 pt-1">
+                                                                                <span>Horas perdidas:</span>
+                                                                                <span className="text-xs font-black">{lostInfo.lateLostHours.toFixed(1)} hrs</span>
+                                                                            </div>
+                                                                        </div>
+                                                                    </motion.div>
+                                                                );
+                                                            })()}
+                                                        </AnimatePresence>
+
+                                                        {/* Time input nested if Leave Early */}
+                                                        <AnimatePresence>
+                                                            {isLeaveEarly && (() => {
+                                                                const lostInfo = getLostHoursForAttendance(
+                                                                    currentSessionTimeOptions.sessionStart,
+                                                                    currentSessionTimeOptions.sessionEnd,
+                                                                    rec?.arrivalTime,
+                                                                    rec?.departureTime
+                                                                );
+                                                                return (
+                                                                    <motion.div 
+                                                                        initial={{ opacity: 0, height: 0, marginTop: 0 }} 
+                                                                        animate={{ opacity: 1, height: "auto", marginTop: 8 }} 
+                                                                        exit={{ opacity: 0, height: 0, marginTop: 0 }}
+                                                                        className="overflow-hidden"
+                                                                    >
+                                                                        <div className="flex flex-col gap-1.5 p-2 rounded-lg bg-blue-100/50 dark:bg-blue-950/20 border border-blue-200/60 dark:border-blue-900/40">
+                                                                            <div className="flex items-center justify-between gap-2">
+                                                                                <span className="text-[10px] font-bold text-blue-800 dark:text-blue-300 pl-1">Hora Retiro:</span>
+                                                                                <select
+                                                                                    disabled={isSavingAtt}
+                                                                                    className="h-6 w-[115px] rounded-md border border-blue-300 dark:border-blue-900/60 bg-white dark:bg-black text-[10px] font-bold text-blue-900 dark:text-blue-200 px-1 outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                                                                                    value={rec?.departureTime || ""}
+                                                                                    onChange={e => updateLeaveTime(s.id, e.target.value)}
+                                                                                >
+                                                                                    <option value="" disabled>Seleccione...</option>
+                                                                                    {rec?.departureTime && !currentSessionTimeOptions.leaveOptions.includes(rec.departureTime) && (
+                                                                                        <option value={rec.departureTime}>{rec.departureTime} (Fuera de rango)</option>
+                                                                                    )}
+                                                                                    {currentSessionTimeOptions.leaveOptions.map(time => (
+                                                                                        <option key={time} value={time}>
+                                                                                            {time}
+                                                                                        </option>
+                                                                                    ))}
+                                                                                </select>
+                                                                            </div>
+                                                                            <div className="flex justify-between items-center text-[10px] font-bold text-blue-800 dark:text-blue-300 px-1 border-t border-blue-200/30 pt-1">
+                                                                                <span>Horas perdidas:</span>
+                                                                                <span className="text-xs font-black">{lostInfo.leaveLostHours.toFixed(1)} hrs</span>
+                                                                            </div>
+                                                                        </div>
+                                                                    </motion.div>
+                                                                );
+                                                            })()}
+                                                        </AnimatePresence>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                ) : attMode === "summary" ? (
+                                    // MODE 2: SUMMARY VIEW (Resumen)
+                                    <div className="space-y-4">
+                                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2">
+                                            <Badge variant="outline" className="bg-primary/10 text-primary border-primary/20 w-fit">
+                                                <ClipboardList className="w-3.5 h-3.5 mr-1" />
+                                                Resumen de Inasistencias y Tardanzas de Hoy
+                                            </Badge>
+                                            <span className="text-xs font-semibold text-muted-foreground">
+                                                {Object.values(attRecords).filter((r: any) => r.status === "ABSENT" || r.status === "LATE" || r.status === "LEAVE_EARLY").length} Aprendices con novedades marcadas
+                                            </span>
+                                        </div>
+
+                                        {Object.values(attRecords).filter((r: any) => r.status === "ABSENT" || r.status === "LATE" || r.status === "LEAVE_EARLY").length === 0 ? (
+                                            <div className="flex flex-col items-center justify-center py-16 text-center space-y-4 rounded-2xl border border-dashed bg-card shadow-sm">
+                                                <div className="p-3 bg-emerald-100/70 dark:bg-emerald-950/40 border border-emerald-200/60 dark:border-emerald-800/40 rounded-full text-emerald-700 dark:text-emerald-300">
+                                                    <CheckSquare className="w-8 h-8" />
+                                                </div>
+                                                <div className="space-y-1">
+                                                    <h3 className="font-black text-lg text-foreground">¡Todo en orden!</h3>
+                                                    <p className="text-sm text-muted-foreground max-w-sm">No hay inasistencias o tardanzas registradas para esta clase. Todos los aprendices están marcados como presentes.</p>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <div 
+                                                className="rounded-2xl border bg-card shadow-sm overflow-x-auto overflow-y-hidden overscroll-x-contain overscroll-y-auto scrollbar-thin"
+                                                style={{
+                                                    WebkitOverflowScrolling: "touch",
+                                                    touchAction: "pan-x pan-y",
+                                                    overscrollBehaviorX: "contain",
+                                                    overscrollBehaviorY: "auto"
+                                                }}
+                                            >
+                                                <Table>
+                                                    <TableHeader className="bg-muted/30">
+                                                        <TableRow>
+                                                            <TableHead className="pl-6">Aprendiz</TableHead>
+                                                            <TableHead className="w-[150px] text-center">Identificación</TableHead>
+                                                            <TableHead className="w-[150px] text-center">Novedad</TableHead>
+                                                            <TableHead className="w-[180px] text-center">Detalle</TableHead>
+                                                            <TableHead className="w-[120px] text-right pr-6">Acción</TableHead>
+                                                        </TableRow>
+                                                    </TableHeader>
+                                                    <TableBody>
+                                                        {filteredStudents
+                                                            .filter((s: any) => {
+                                                                const rec = attRecords[s.id];
+                                                                return rec && (rec.status === "ABSENT" || rec.status === "LATE" || rec.status === "LEAVE_EARLY");
+                                                            })
+                                                            .map((s: any) => {
+                                                                const daysOfWeekEng = ["SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"];
+                                                                const rec = attRecords[s.id];
+                                                                const isAbsent = rec.status === "ABSENT";
+                                                                const isLate = rec.status === "LATE" || !!rec.arrivalTime;
+                                                                const isLeaveEarly = rec.status === "LEAVE_EARLY" || !!rec.departureTime;
+                                                                const isDualLateAndLeave = isLate && isLeaveEarly;
+                                                                return (
+                                                                    <TableRow key={s.id} className="hover:bg-muted/10 transition-colors">
+                                                                        <TableCell className="pl-6 py-3.5">
+                                                                            <div className="flex items-center gap-3">
+                                                                                <Avatar className="w-9 h-9 border">
+                                                                                    <AvatarImage src={s.image} />
+                                                                                    <AvatarFallback className="bg-primary/10 text-primary text-xs font-bold">
+                                                                                        {s.name?.substring(0, 2).toUpperCase()}
+                                                                                    </AvatarFallback>
+                                                                                </Avatar>
+                                                                                <div className="min-w-0">
+                                                                                    <div className="font-semibold text-sm text-foreground flex items-center gap-1.5 flex-wrap whitespace-normal">
+                                                                                        <span>{formatName(s.name, s.profile)}</span>
+                                                                                        <StudentNovedadBadge novedad={s.profile?.novedad} color={s.profile?.novedadColor} />
+                                                                                        <StudentVoceroBadge size="sm" role={s.id === selectedGroup?.voceroPrincipalId ? "PRINCIPAL" : s.id === selectedGroup?.voceroSuplenteId ? "SUPLENTE" : null} />
+                                                                                    </div>
+                                                                                </div>
+                                                                            </div>
+                                                                        </TableCell>
+                                                                        <TableCell className="text-center font-mono text-xs text-muted-foreground">
+                                                                            {s.profile?.identificacion || "—"}
+                                                                        </TableCell>
+                                                                        <TableCell className="text-center">
+                                                                            <Badge variant="outline" className={`font-bold text-xs ${
+                                                                                isAbsent 
+                                                                                    ? 'text-rose-800 border-rose-300 bg-rose-100/70 dark:text-rose-200 dark:border-rose-700/60 dark:bg-rose-950/60' 
+                                                                                    : isDualLateAndLeave
+                                                                                        ? 'text-indigo-800 border-indigo-300 bg-indigo-100/70 dark:text-indigo-200 dark:border-indigo-700/60 dark:bg-indigo-950/60'
+                                                                                        : isLate 
+                                                                                            ? 'text-amber-900 border-amber-300 bg-amber-100/70 dark:text-amber-200 dark:border-amber-700/60 dark:bg-amber-950/60'
+                                                                                            : 'text-sky-900 border-sky-300 bg-sky-100/70 dark:text-sky-200 dark:border-sky-700/60 dark:bg-sky-950/60'
+                                                                            }`}>
+                                                                                {isAbsent ? "Inasistencia" : isDualLateAndLeave ? "Tarde + Retiro" : isLate ? "Llegada Tarde" : "Retiro Temprano"}
+                                                                            </Badge>
+                                                                        </TableCell>
+                                                                        <TableCell className="text-center">
+                                                                            {(() => {
+                                                                                const lostInfo = getLostHoursForAttendance(
+                                                                                    currentSessionTimeOptions.sessionStart,
+                                                                                    currentSessionTimeOptions.sessionEnd,
+                                                                                    rec?.arrivalTime,
+                                                                                    rec?.departureTime
+                                                                                );
+
+                                                                                if (isAbsent) {
+                                                                                    return <span className="text-xs text-muted-foreground font-semibold">Día completo ({lostInfo.sessionDuration.toFixed(1)} hrs)</span>;
+                                                                                }
+
+                                                                                return (
+                                                                                    <div className="flex flex-col gap-1.5 items-center justify-center">
+                                                                                        {isLate && (
+                                                                                            <div className="flex items-center gap-1.5">
+                                                                                                <span className="text-[10px] font-bold text-amber-800 dark:text-amber-300">Ingreso:</span>
+                                                                                                <select
+                                                                                                    disabled={isSavingAtt}
+                                                                                                    className="h-6 w-[95px] rounded-md border border-amber-300 dark:border-amber-900/60 bg-white dark:bg-black text-[10px] font-bold text-amber-900 dark:text-amber-200 px-1 outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                                                                                                    value={rec.arrivalTime || ""}
+                                                                                                    onChange={e => updateLateTime(s.id, e.target.value)}
+                                                                                                >
+                                                                                                    <option value="" disabled>Seleccione...</option>
+                                                                                                    {rec?.arrivalTime && !currentSessionTimeOptions.lateOptions.includes(rec.arrivalTime) && (
+                                                                                                        <option value={rec.arrivalTime}>{rec.arrivalTime} (Fuera de rango)</option>
+                                                                                                    )}
+                                                                                                    {currentSessionTimeOptions.lateOptions.map(time => (
+                                                                                                        <option key={time} value={time}>
+                                                                                                            {time}
+                                                                                                        </option>
+                                                                                                    ))}
+                                                                                                </select>
+                                                                                                <span className="text-[9px] font-bold text-amber-600 dark:text-amber-400">
+                                                                                                    {lostInfo.lateLostHours.toFixed(1)} h
+                                                                                                </span>
+                                                                                            </div>
+                                                                                        )}
+                                                                                        {isLeaveEarly && (
+                                                                                            <div className="flex items-center gap-1.5">
+                                                                                                <span className="text-[10px] font-bold text-sky-900 dark:text-sky-300">Retiro:</span>
+                                                                                                <select
+                                                                                                    disabled={isSavingAtt}
+                                                                                                    className="h-6 w-[95px] rounded-md border border-sky-300 dark:border-sky-900/60 bg-white dark:bg-black text-[10px] font-bold text-sky-900 dark:text-sky-200 px-1 outline-none focus:ring-1 focus:ring-sky-500 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                                                                                                    value={rec.departureTime || ""}
+                                                                                                    onChange={e => updateLeaveTime(s.id, e.target.value)}
+                                                                                                >
+                                                                                                    <option value="" disabled>Seleccione...</option>
+                                                                                                    {rec?.departureTime && !currentSessionTimeOptions.leaveOptions.includes(rec.departureTime) && (
+                                                                                                        <option value={rec.departureTime}>{rec.departureTime} (Fuera de rango)</option>
+                                                                                                    )}
+                                                                                                    {currentSessionTimeOptions.leaveOptions.map(time => (
+                                                                                                        <option key={time} value={time}>
+                                                                                                            {time}
+                                                                                                        </option>
+                                                                                                    ))}
+                                                                                                </select>
+                                                                                                <span className="text-[9px] font-bold text-sky-800 dark:text-sky-300">
+                                                                                                    {lostInfo.leaveLostHours.toFixed(1)} h
+                                                                                                </span>
+                                                                                            </div>
+                                                                                        )}
+                                                                                        {isDualLateAndLeave && (
+                                                                                            <span className="text-[9px] font-black text-indigo-800 dark:text-indigo-300">
+                                                                                                Total perdido: {lostInfo.totalLostHours.toFixed(1)} hrs
+                                                                                            </span>
+                                                                                        )}
+                                                                                    </div>
+                                                                                );
+                                                                            })()}
+                                                                        </TableCell>
+                                                                        <TableCell className="text-right pr-6">
+                                                                            <Button 
+                                                                                size="sm" 
+                                                                                variant="ghost" 
+                                                                                disabled={isSavingAtt}
+                                                                                onClick={() => setStudentAttendance(s.id, "PRESENT")}
+                                                                                className="h-7 px-2.5 text-xs text-emerald-800 dark:text-emerald-200 bg-emerald-100/70 hover:bg-emerald-200/80 border border-emerald-300 dark:bg-emerald-950/60 dark:border-emerald-700/60 font-bold rounded-lg transition-all"
+                                                                            >
+                                                                                Marcar Presente
+                                                                            </Button>
+                                                                        </TableCell>
+                                                                    </TableRow>
+                                                                );
+                                                            })}
+                                                    </TableBody>
+                                                </Table>
+                                            </div>
+                                        )}
+                                    </div>
+                                ) : attMode === "metrics" ? (() => {
+                                    const currentCourse = selectedGroup.courses?.find((c: any) => c.id === attCourseId);
+                                    const { start: effectiveStart, end: effectiveEnd } = getEffectiveDatesForCourse(selectedGroup, attCourseId);
+
+                                    // Get group start/end times and calculate fallback daily duration
+                                    const gStart = selectedGroup.startTime || "08:00";
+                                    const gEnd = selectedGroup.endTime || "12:00";
+                                    
+                                    const [gsh, gsm] = gStart.split(":").map(Number);
+                                    const [geh, gem] = gEnd.split(":").map(Number);
+                                    const groupDailyHours = Math.max(0, (geh * 60 + gem - (gsh * 60 + gsm)) / 60);
+
+                                    const daysOfWeekEng = ["SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"];
+
+                                    const getSessionInfoForDate = (dateVal: string | Date) => {
+                                        const d = typeof dateVal === "string" ? new Date(dateVal.includes("T") ? dateVal : dateVal + "T12:00:00Z") : dateVal;
+                                        const dayName = daysOfWeekEng[d.getUTCDay()];
+                                        const sch = currentCourse?.schedules?.find((s: any) => s.dayOfWeek === dayName) ||
+                                                    selectedGroup?.scheduleSlots?.find((s: any) => s.dayOfWeek === dayName);
+                                        const start = sch?.startTime || selectedGroup.startTime || "08:00";
+                                        const end = sch?.endTime || selectedGroup.endTime || "12:00";
+                                        const duration = sch ? calculateHoursDiff(sch.startTime, sch.endTime) : groupDailyHours;
+                                        return { start, end, duration: duration > 0 ? duration : (groupDailyHours || 4) };
+                                    };
+
+                                    // Get all scheduled dates within the active schedule period (inicio y fin de horario vigente),
+                                    // excluyendo los días festivos oficiales para el cálculo de sesiones y horas reales de clase
+                                    const rawValidDaysList = getValidClassDaysList();
+                                    const validDaysList = rawValidDaysList.filter((dStr: string) => !isColombianHoliday(dStr));
+                                    const totalClassDays = validDaysList.length;
+
+                                    // Horas totales programadas calculadas con base en las franjas horarias semanales de la materia
+                                    // dentro del rango de inicio y fin del horario vigente:
+                                    const totalScheduledHours = validDaysList.length > 0
+                                        ? validDaysList.reduce((sum: number, dStr: string) => sum + getSessionInfoForDate(dStr).duration, 0)
+                                        : calculateTotalScheduledHours(currentCourse, selectedGroup, { startDate: effectiveStart, endDate: effectiveEnd }, attendanceHistory);
+
+                                    if (totalClassDays === 0) {
+                                        return (
+                                            <div className="flex flex-col items-center justify-center py-16 text-center space-y-4 rounded-2xl border border-dashed bg-card shadow-sm">
+                                                <div className="p-3 bg-amber-50 dark:bg-amber-950/20 rounded-full text-amber-600 dark:text-amber-400">
+                                                    <HelpCircle className="w-8 h-8" />
+                                                </div>
+                                                <div className="space-y-1">
+                                                    <h3 className="font-black text-lg text-foreground">Sin días de clase configurados</h3>
+                                                    <p className="text-sm text-muted-foreground max-w-sm">
+                                                        No hay días de clase programados dentro del rango del horario para esta materia.
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        );
+                                    }
+
+                                    // Calculate metrics per student using the centralized and verified attendance loss engine
+                                    const studentMetrics = selectedGroup.students?.map((student: any) => {
+                                        const loss = calculateStudentAttendanceLoss(
+                                            student.id,
+                                            attCourseId,
+                                            attendanceHistory || [],
+                                            currentCourse,
+                                            selectedGroup,
+                                            { startDate: effectiveStart, endDate: effectiveEnd }
+                                        );
+
+                                        const absentCount = loss.absentCount;
+                                        const absentHours = loss.absentHours;
+                                        const lateCount = loss.lateCount;
+                                        const lateHours = loss.lateHours;
+                                        const leaveCount = loss.leaveCount;
+                                        const leaveHours = loss.leaveHours;
+                                        const totalLostHours = loss.totalLostHours;
+
+                                        // Attendance rates
+                                        const attendanceDaysRate = totalClassDays > 0 
+                                            ? Math.max(0, Math.min(100, ((totalClassDays - absentCount) / totalClassDays) * 100))
+                                            : 100;
+
+                                        const attendanceHoursRate = totalScheduledHours > 0
+                                            ? Math.max(0, Math.min(100, ((totalScheduledHours - totalLostHours) / totalScheduledHours) * 100))
+                                            : 100;
+
+                                        // Late rates
+                                        const lateDaysRate = totalClassDays > 0
+                                            ? Math.max(0, Math.min(100, (lateCount / totalClassDays) * 100))
+                                            : 0;
+
+                                        const lateHoursRate = totalScheduledHours > 0
+                                            ? Math.max(0, Math.min(100, (lateHours / totalScheduledHours) * 100))
+                                            : 0;
+
+                                        return {
+                                            student,
+                                            absentCount,
+                                            absentHours,
+                                            lateCount,
+                                            lateHours,
+                                            leaveCount,
+                                            leaveHours,
+                                            totalLostHours,
+                                            attendanceDaysRate,
+                                            attendanceHoursRate,
+                                            lateDaysRate,
+                                            lateHoursRate
+                                        };
+                                    }) || [];
+
+                                    // Averages
+                                    const avgAttendanceDays = studentMetrics.length > 0
+                                        ? studentMetrics.reduce((acc: number, m: any) => acc + m.attendanceDaysRate, 0) / studentMetrics.length
+                                        : 100;
+                                    const avgAttendanceHours = studentMetrics.length > 0
+                                        ? studentMetrics.reduce((acc: number, m: any) => acc + m.attendanceHoursRate, 0) / studentMetrics.length
+                                        : 100;
+                                    const avgLateDays = studentMetrics.length > 0
+                                        ? studentMetrics.reduce((acc: number, m: any) => acc + m.lateDaysRate, 0) / studentMetrics.length
+                                        : 0;
+                                    const avgLateHours = studentMetrics.length > 0
+                                        ? studentMetrics.reduce((acc: number, m: any) => acc + m.lateHoursRate, 0) / studentMetrics.length
+                                        : 0;
+                                    const avgLeaveDays = studentMetrics.length > 0
+                                        ? studentMetrics.reduce((acc: number, m: any) => acc + (m.leaveCount / totalClassDays) * 100, 0) / studentMetrics.length
+                                        : 0;
+                                    const avgLeaveHours = studentMetrics.length > 0
+                                        ? studentMetrics.reduce((acc: number, m: any) => acc + (m.leaveHours / totalScheduledHours) * 100, 0) / studentMetrics.length
+                                        : 0;
+
+                                    const exportMetricsExcel = async () => {
+                                        if (!selectedGroup || !attCourseId) return toast.error("Selecciona un grupo y materia");
+                                        const course = selectedGroup.courses?.find((c: any) => c.id === attCourseId);
+                                        const courseTitle = course?.title || "Materia";
+
+                                        const allStudentsSummary = studentMetrics.map((m: any) => ({
+                                            name: formatName(m.student.name, m.student.profile),
+                                            identification: m.student.profile?.identificacion || "—",
+                                            absences: m.absentCount,
+                                            lates: m.lateCount,
+                                            leaves: m.leaveCount,
+                                            attendancePercent: m.attendanceHoursRate || 0,
+                                        }));
+
+                                        const riskStudents = allStudentsSummary.filter((s: any) => s.attendancePercent < 80);
+                                        const totalAbsences = studentMetrics.reduce((acc: number, m: any) => acc + m.absentCount, 0);
+                                        const totalLates = studentMetrics.reduce((acc: number, m: any) => acc + m.lateCount, 0);
+                                        const totalLeaves = studentMetrics.reduce((acc: number, m: any) => acc + m.leaveCount, 0);
+                                        const overallAttendanceRate = studentMetrics.length > 0
+                                            ? studentMetrics.reduce((acc: number, m: any) => acc + m.attendanceHoursRate, 0) / studentMetrics.length
+                                            : 100;
+
+                                        const history = attendanceHistory.filter((r: any) => r.courseId === attCourseId);
+                                        const allDates = [...new Set(history.map((r: any) => typeof r.date === 'string' ? r.date.split('T')[0] : new Date(r.date).toISOString().split('T')[0]))];
+
+                                        const toastId = toast.loading("Generando Excel de Métricas...");
+                                        try {
+                                            await generateAndDownloadAttendanceMetricsExcel({
+                                                groupName: selectedGroup.name,
+                                                courseTitle,
+                                                totalSessions: allDates.length,
+                                                totalStudents: studentMetrics.length,
+                                                overallAttendanceRate,
+                                                totalAbsences,
+                                                totalLates,
+                                                totalLeaves,
+                                                riskStudents,
+                                                allStudentsSummary,
+                                            });
+                                            toast.success("Métricas exportadas a Excel", { id: toastId });
+                                        } catch (e: any) {
+                                            toast.error("Error al exportar métricas: " + e.message, { id: toastId });
+                                        }
+                                    };
+
+                                    const exportMetricsPDF = async () => {
+                                        if (!selectedGroup || !attCourseId) return toast.error("Selecciona un grupo y materia");
+                                        const course = selectedGroup.courses?.find((c: any) => c.id === attCourseId);
+                                        const courseTitle = course?.title || "Materia";
+
+                                        const allStudentsSummary = studentMetrics.map((m: any) => ({
+                                            name: formatName(m.student.name, m.student.profile),
+                                            identification: m.student.profile?.identificacion || "—",
+                                            absences: m.absentCount,
+                                            lates: m.lateCount,
+                                            leaves: m.leaveCount,
+                                            attendancePercent: m.attendanceHoursRate || 0,
+                                        }));
+
+                                        const riskStudents = allStudentsSummary.filter((s: any) => s.attendancePercent < 80);
+                                        const totalAbsences = studentMetrics.reduce((acc: number, m: any) => acc + m.absentCount, 0);
+                                        const totalLates = studentMetrics.reduce((acc: number, m: any) => acc + m.lateCount, 0);
+                                        const totalLeaves = studentMetrics.reduce((acc: number, m: any) => acc + m.leaveCount, 0);
+                                        const overallAttendanceRate = studentMetrics.length > 0
+                                            ? studentMetrics.reduce((acc: number, m: any) => acc + m.attendanceHoursRate, 0) / studentMetrics.length
+                                            : 100;
+
+                                        const history = attendanceHistory.filter((r: any) => r.courseId === attCourseId);
+                                        const allDates = [...new Set(history.map((r: any) => typeof r.date === 'string' ? r.date.split('T')[0] : new Date(r.date).toISOString().split('T')[0]))];
+
+                                        const toastId = toast.loading("Generando PDF vectorial de Métricas...");
+                                        try {
+                                            await generateAndDownloadAttendanceMetricsPdf({
+                                                groupName: selectedGroup.name,
+                                                courseTitle,
+                                                totalSessions: allDates.length,
+                                                totalStudents: studentMetrics.length,
+                                                overallAttendanceRate,
+                                                totalAbsences,
+                                                totalLates,
+                                                totalLeaves,
+                                                riskStudents,
+                                                allStudentsSummary,
+                                            });
+                                            toast.success("Métricas exportadas a PDF", { id: toastId });
+                                        } catch (e: any) {
+                                            toast.error("Error al exportar PDF de métricas: " + e.message, { id: toastId });
+                                        }
+                                    };
+
+                                    return (
+                                        <Tabs defaultValue="faltas" className="space-y-6 w-full">
+                                            <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
+                                                <div>
+                                                    <h3 className="text-lg font-bold">Resumen Analítico</h3>
+                                                    <p className="text-sm text-muted-foreground">Estadísticas calculadas para la materia seleccionada</p>
+                                                </div>
+                                                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 w-full lg:w-auto">
+                                                    <TabsList className="h-10 sm:h-9 p-1 bg-muted/60 dark:bg-muted/30 rounded-xl border border-border/60 shadow-2xs grid grid-cols-4 w-full sm:flex sm:w-max gap-0.5 sm:gap-1">
+                                                        <TabsTrigger value="faltas" className="h-8 sm:h-7 px-1.5 sm:px-3 rounded-lg text-xs font-extrabold data-[state=active]:bg-card data-[state=active]:text-primary data-[state=active]:shadow-xs transition-all cursor-pointer justify-center">Faltas</TabsTrigger>
+                                                        <TabsTrigger value="tardanzas" className="h-8 sm:h-7 px-1 sm:px-3 rounded-lg text-xs font-extrabold data-[state=active]:bg-card data-[state=active]:text-primary data-[state=active]:shadow-xs transition-all cursor-pointer justify-center">Tardanzas</TabsTrigger>
+                                                        <TabsTrigger value="retiros" className="h-8 sm:h-7 px-1.5 sm:px-3 rounded-lg text-xs font-extrabold data-[state=active]:bg-card data-[state=active]:text-primary data-[state=active]:shadow-xs transition-all cursor-pointer justify-center">Retiros</TabsTrigger>
+                                                        <TabsTrigger value="horas" className="h-8 sm:h-7 px-1 sm:px-3 rounded-lg text-xs font-extrabold data-[state=active]:bg-card data-[state=active]:text-primary data-[state=active]:shadow-xs transition-all cursor-pointer justify-center">
+                                                            <span className="hidden sm:inline">Carga Horaria</span>
+                                                            <span className="sm:hidden">Horas</span>
+                                                        </TabsTrigger>
+                                                    </TabsList>
+                                                    <div className="flex items-center gap-2 w-full sm:w-auto">
+                                                        <Button variant="outline" size="sm" onClick={exportMetricsExcel} className="flex-1 sm:flex-none h-9 text-xs font-bold">
+                                                            <FileSpreadsheet className="w-4 h-4 mr-2 text-emerald-600" /> Excel
+                                                        </Button>
+                                                        <Button variant="outline" size="sm" onClick={exportMetricsPDF} className="flex-1 sm:flex-none h-9 text-xs font-bold">
+                                                            <FileDown className="w-4 h-4 mr-2 text-red-600" /> PDF
+                                                        </Button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            {/* KPI Grid */}
+                                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                                                <div className="bg-card border rounded-2xl p-4 flex flex-col justify-between shadow-sm">
+                                                    <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Carga Horaria Programada</span>
+                                                    <div className="mt-2 flex flex-col items-start gap-0.5">
+                                                        <span className="text-3xl font-black text-foreground">{totalScheduledHours.toFixed(1)} hs</span>
+                                                        <span className="text-[10px] font-bold text-muted-foreground">({totalClassDays} sesiones dentro del horario vigente)</span>
+                                                    </div>
+                                                </div>
+                                                <div className="bg-card border rounded-2xl p-4 flex flex-col justify-between shadow-sm">
+                                                    <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Asistencia Efectiva Promedio</span>
+                                                    <div className="mt-2 flex flex-col items-start gap-0.5">
+                                                        <span className="text-3xl font-black text-emerald-700 dark:text-emerald-300">{avgAttendanceHours.toFixed(1)}%</span>
+                                                        <span className="text-[10px] font-bold text-muted-foreground">({avgAttendanceDays.toFixed(1)}% por asistencia de días)</span>
+                                                    </div>
+                                                </div>
+                                                <div className="bg-card border rounded-2xl p-4 flex flex-col justify-between shadow-sm">
+                                                    <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Total Inasistencias (Faltas)</span>
+                                                    <div className="mt-2 flex flex-col items-start gap-0.5">
+                                                        <span className="text-3xl font-black text-rose-700 dark:text-rose-400">
+                                                            {studentMetrics.reduce((acc: number, m: any) => acc + m.absentCount, 0)}
+                                                        </span>
+                                                        <span className="text-[10px] font-bold text-muted-foreground">
+                                                            ({studentMetrics.reduce((acc: number, m: any) => acc + m.absentHours, 0).toFixed(1)} hs perdidas por falta)
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                                <div className="bg-card border rounded-2xl p-4 flex flex-col justify-between shadow-sm">
+                                                    <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Pérdida (Tardes y Retiros)</span>
+                                                    <div className="mt-2 flex flex-col items-start gap-0.5">
+                                                        <span className="text-3xl font-black text-amber-700 dark:text-amber-400">{(avgLateHours + avgLeaveHours).toFixed(2)}%</span>
+                                                        <span className="text-[10px] font-bold text-muted-foreground">({avgLateHours.toFixed(1)}% Tardes / {avgLeaveHours.toFixed(1)}% Retiros)</span>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            {/* Stacked Full-Width Charts Section Organized by Tabs */}
+                                            <TabsContent value="faltas" className="space-y-6 focus-visible:outline-none focus-visible:ring-0 mt-0">
+                                                {/* CHART 1: ABSENCES (FALTAS) */}
+                                                <div className="bg-card border rounded-2xl p-5 shadow-sm space-y-4 w-full">
+                                                    <div>
+                                                        <h3 className="text-base font-black text-foreground">Registro de Inasistencias (Faltas)</h3>
+                                                        <p className="text-xs text-muted-foreground mt-0.5">Total de días no asistidos por cada aprendiz sobre el total de días programados.</p>
+                                                    </div>
+
+                                                    <div className="space-y-4">
+                                                         {studentMetrics.map(({ student, absentCount, attendanceDaysRate }: any) => {
+                                                             const absenceRate = 100 - attendanceDaysRate;
+                                                             return (
+                                                                 <div key={student.id} className="space-y-1.5">
+                                                                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 sm:gap-2 text-xs font-bold">
+                                                                          <span className="text-foreground font-bold break-words leading-tight">{formatName(student.name, student.profile)}</span>
+                                                                          <span className="text-rose-700 dark:text-rose-300 font-extrabold text-[11px] sm:text-xs shrink-0">
+                                                                              {absentCount} {absentCount === 1 ? "Falta" : "Faltas"} / {totalClassDays} días ({absenceRate.toFixed(1)}%)
+                                                                          </span>
+                                                                      </div>
+                                                                     <div className="h-2 w-full bg-slate-100/90 dark:bg-muted/60 border border-slate-200/50 dark:border-transparent rounded-full overflow-hidden">
+                                                                         <div 
+                                                                             className="h-full bg-rose-200 dark:bg-rose-600/70 rounded-full transition-all duration-500" 
+                                                                             style={{ width: `${absenceRate}%` }}
+                                                                         />
+                                                                     </div>
+                                                                 </div>
+                                                             );
+                                                         })}
+                                                    </div>
+                                                </div>
+
+                                                </TabsContent>
+
+                                                <TabsContent value="tardanzas" className="space-y-6 focus-visible:outline-none focus-visible:ring-0 mt-0">
+                                                {/* CHART 2: LATE ARRIVALS (TARDANZAS) */}
+                                                <div className="bg-card border rounded-2xl p-5 shadow-sm space-y-4 w-full">
+                                                    <div>
+                                                        <h3 className="text-base font-black text-foreground">Registro de Llegadas Tarde (Tardanzas)</h3>
+                                                        <p className="text-xs text-muted-foreground mt-0.5">Cantidad de días en los que el aprendiz registró ingreso tarde sobre los días programados.</p>
+                                                    </div>
+
+                                                    <div className="space-y-4">
+                                                         {studentMetrics.map(({ student, lateCount, lateDaysRate }: any) => (
+                                                             <div key={student.id} className="space-y-1.5">
+                                                                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 sm:gap-2 text-xs font-bold">
+                                                                      <span className="text-foreground font-bold break-words leading-tight">{formatName(student.name, student.profile)}</span>
+                                                                      <span className="text-amber-700 dark:text-amber-300 font-extrabold text-[11px] sm:text-xs shrink-0">
+                                                                          {lateCount} {lateCount === 1 ? "Tarde" : "Tardes"} / {totalClassDays} días ({lateDaysRate.toFixed(1)}%)
+                                                                      </span>
+                                                                  </div>
+                                                                 <div className="h-2 w-full bg-slate-100/90 dark:bg-muted/60 border border-slate-200/50 dark:border-transparent rounded-full overflow-hidden">
+                                                                     <div 
+                                                                         className="h-full bg-amber-200 dark:bg-amber-600/70 rounded-full transition-all duration-500" 
+                                                                         style={{ width: `${lateDaysRate}%` }}
+                                                                     />
+                                                                 </div>
+                                                             </div>
+                                                         ))}
+                                                    </div>
+                                                </div>
+
+                                                </TabsContent>
+
+                                                <TabsContent value="retiros" className="space-y-6 focus-visible:outline-none focus-visible:ring-0 mt-0">
+                                                {/* CHART 2b: LEAVE EARLY (RETIROS) */}
+                                                <div className="bg-card border rounded-2xl p-5 shadow-sm space-y-4 w-full">
+                                                    <div>
+                                                        <h3 className="text-base font-black text-foreground">Registro de Retiros Tempranos</h3>
+                                                        <p className="text-xs text-muted-foreground mt-0.5">Cantidad de días en los que el aprendiz registró retiro temprano sobre los días programados.</p>
+                                                    </div>
+
+                                                    <div className="space-y-4">
+                                                         {studentMetrics.map(({ student, leaveCount }: any) => {
+                                                             const leaveDaysRate = totalClassDays > 0 ? (leaveCount / totalClassDays) * 100 : 0;
+                                                             return (
+                                                                 <div key={student.id} className="space-y-1.5">
+                                                                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 sm:gap-2 text-xs font-bold">
+                                                                          <span className="text-foreground font-bold break-words leading-tight">{formatName(student.name, student.profile)}</span>
+                                                                          <span className="text-sky-700 dark:text-sky-300 font-extrabold text-[11px] sm:text-xs shrink-0">
+                                                                              {leaveCount} {leaveCount === 1 ? "Retiro" : "Retiros"} / {totalClassDays} días ({leaveDaysRate.toFixed(1)}%)
+                                                                          </span>
+                                                                      </div>
+                                                                     <div className="h-2 w-full bg-slate-100/90 dark:bg-muted/60 border border-slate-200/50 dark:border-transparent rounded-full overflow-hidden">
+                                                                         <div 
+                                                                             className="h-full bg-sky-200 dark:bg-sky-600/70 rounded-full transition-all duration-500" 
+                                                                             style={{ width: `${leaveDaysRate}%` }}
+                                                                         />
+                                                                     </div>
+                                                                 </div>
+                                                             );
+                                                         })}
+                                                    </div>
+                                                </div>
+                                                </TabsContent>
+
+                                                <TabsContent value="horas" className="space-y-6 focus-visible:outline-none focus-visible:ring-0 mt-0">
+                                                {/* CHART 3: TOTAL ACCUMULATED HOURS & EFFECTIVE ATTENDANCE */}
+                                                <div className="bg-card border rounded-2xl p-5 shadow-sm space-y-4 w-full">
+                                                    <div>
+                                                        <h3 className="text-base font-black text-foreground">Carga Horaria y Asistencia Efectiva (Horas Asistidas vs. Perdidas)</h3>
+                                                        <p className="text-xs text-muted-foreground mt-0.5">Muestra la cantidad de horas acumuladas entre faltas y tardanzas, la diferencia (horas asistidas) y el porcentaje de asistencia efectiva con respecto a las horas totales.</p>
+                                                        
+                                                        <div className="flex flex-wrap items-center gap-3 pt-3 text-xs">
+                                                            <div className="flex items-center gap-1.5">
+                                                                <span className="w-2.5 h-2.5 rounded-full bg-emerald-200 dark:bg-emerald-500/80 border border-emerald-400/40"></span>
+                                                                <span className="text-muted-foreground font-semibold">Horas Asistidas</span>
+                                                            </div>
+                                                            <div className="flex items-center gap-1.5">
+                                                                <span className="w-2.5 h-2.5 rounded-full bg-rose-200 dark:bg-rose-500/80 border border-rose-400/40"></span>
+                                                                <span className="text-muted-foreground font-semibold">Faltas</span>
+                                                            </div>
+                                                            <div className="flex items-center gap-1.5">
+                                                                <span className="w-2.5 h-2.5 rounded-full bg-amber-200 dark:bg-amber-500/80 border border-amber-400/40"></span>
+                                                                <span className="text-muted-foreground font-semibold">Tardanzas</span>
+                                                            </div>
+                                                            <div className="flex items-center gap-1.5">
+                                                                <span className="w-2.5 h-2.5 rounded-full bg-sky-200 dark:bg-sky-500/80 border border-sky-400/40"></span>
+                                                                <span className="text-muted-foreground font-semibold">Retiros</span>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="space-y-5">
+                                                         {studentMetrics.map(({ student, absentHours, lateHours, leaveHours, attendanceHoursRate }: any) => {
+                                                              const lostHours = absentHours + lateHours + leaveHours;
+                                                              const attendedHours = Math.max(0, totalScheduledHours - lostHours);
+                                                              return (
+                                                                  <div key={student.id} className="space-y-2 border-b border-border/30 pb-3 last:border-0 last:pb-0">
+                                                                      <div className="flex flex-col sm:flex-row sm:items-center justify-between text-xs font-bold gap-1.5 sm:gap-2">
+                                                                          <span className="text-foreground font-bold break-words leading-tight">{formatName(student.name, student.profile)}</span>
+                                                                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] font-semibold">
+                                                                              <span className="text-emerald-700 dark:text-emerald-300 font-semibold">
+                                                                                  Asistidas: {attendedHours.toFixed(2)} hs
+                                                                              </span>
+                                                                              <span className={lostHours > 0 ? "text-rose-700 dark:text-rose-300 font-semibold" : "text-muted-foreground font-medium"}>
+                                                                                  Perdidas: {lostHours.toFixed(2)} hs
+                                                                              </span>
+                                                                              <span className={cn(
+                                                                                  "font-black px-2 py-0.5 rounded-md border",
+                                                                                  attendanceHoursRate >= 80 
+                                                                                      ? "bg-emerald-100/70 text-emerald-800 border-emerald-200/80 dark:bg-emerald-950/50 dark:text-emerald-300 dark:border-emerald-800/50" 
+                                                                                      : "bg-rose-100/70 text-rose-800 border-rose-200/80 dark:bg-rose-950/50 dark:text-rose-300 dark:border-rose-800/50"
+                                                                              )}>
+                                                                                  Efectiva: {attendanceHoursRate.toFixed(1)}%
+                                                                              </span>
+                                                                          </div>
+                                                                      </div>
+                                                                      
+                                                                      <div className="space-y-1.5">
+                                                                          {/* Stacked indicator bar representing Attended Hours vs. Lost Hours */}
+                                                                          <div className="h-3 w-full bg-slate-100/90 dark:bg-muted/60 border border-slate-200/50 dark:border-transparent rounded-full overflow-hidden flex">
+                                                                              {/* Attended hours bar */}
+                                                                              <div 
+                                                                                  className="h-full bg-emerald-200 dark:bg-emerald-600/70 transition-all duration-500" 
+                                                                                  style={{ width: `${attendanceHoursRate}%` }}
+                                                                                  title={`Horas Asistidas: ${attendedHours.toFixed(2)} hs`}
+                                                                              />
+                                                                              {/* Absent hours bar (rose) */}
+                                                                              {absentHours > 0 && (
+                                                                                  <div 
+                                                                                      className="h-full bg-rose-200 dark:bg-rose-600/70 transition-all duration-500" 
+                                                                                      style={{ width: `${(absentHours / totalScheduledHours) * 100}%` }}
+                                                                                      title={`Horas de Faltas: ${absentHours.toFixed(2)} hs`}
+                                                                                  />
+                                                                              )}
+                                                                              {/* Late hours bar (amber) */}
+                                                                              {lateHours > 0 && (
+                                                                                  <div 
+                                                                                      className="h-full bg-amber-200 dark:bg-amber-600/70 transition-all duration-500" 
+                                                                                      style={{ width: `${(lateHours / totalScheduledHours) * 100}%` }}
+                                                                                      title={`Horas de Tardanzas: ${lateHours.toFixed(2)} hs`}
+                                                                                  />
+                                                                              )}
+                                                                              {/* Leave hours bar (sky) */}
+                                                                              {leaveHours > 0 && (
+                                                                                  <div 
+                                                                                      className="h-full bg-sky-200 dark:bg-sky-600/70 transition-all duration-500" 
+                                                                                      style={{ width: `${(leaveHours / totalScheduledHours) * 100}%` }}
+                                                                                      title={`Horas de Retiros: ${leaveHours.toFixed(2)} hs`}
+                                                                                  />
+                                                                              )}
+                                                                          </div>
+                                                                          
+                                                                          {/* Detailed breakdown subtext */}
+                                                                          <div className="text-[10px] text-muted-foreground flex flex-wrap justify-between gap-1 items-center">
+                                                                              <span className="font-medium">{totalScheduledHours.toFixed(1)} hs totales del curso</span>
+                                                                              <div className="flex flex-wrap items-center gap-1.5 font-medium">
+                                                                                  <span className="text-muted-foreground/80">Desglose de pérdida:</span>
+                                                                                  <span className="text-rose-700 dark:text-rose-300 font-medium">{absentHours.toFixed(1)} hs Faltas</span>
+                                                                                  <span className="text-muted-foreground/40">•</span>
+                                                                                  <span className="text-amber-800 dark:text-amber-300 font-medium">{lateHours.toFixed(2)} hs Tardanzas</span>
+                                                                                  <span className="text-muted-foreground/40">•</span>
+                                                                                  <span className="text-sky-800 dark:text-sky-300 font-medium">{leaveHours.toFixed(2)} hs Retiros</span>
+                                                                              </div>
+                                                                          </div>
+                                                                      </div>
+                                                                  </div>
+                                                              );
+                                                          })}
+                                                    </div>
+                                                </div>
+                                                </TabsContent>
+
+                                            {/* HIDDEN PRINT VIEW FOR PDF EXPORT - Contains all 3 charts un-tabbed with inline styles to prevent CSS parsing errors */}
+                                            <div ref={printMetricsRef} style={{ display: 'none', width: '800px', padding: '32px', backgroundColor: '#ffffff', color: '#0f172a' }}>
+                                                <h2 style={{ fontSize: '24px', fontWeight: '900', marginBottom: '8px', margin: 0 }}>Métricas de Asistencia - {selectedGroup.name}</h2>
+                                                <h3 style={{ fontSize: '16px', fontWeight: '700', marginBottom: '24px', color: '#475569', margin: '4px 0 24px 0' }}>Materia: {selectedGroup.courses?.find((c: any) => c.id === attCourseId)?.title || "General"}</h3>
+                                                
+                                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '16px', marginBottom: '32px' }}>
+                                                    <div style={{ border: '1px solid #e2e8f0', borderRadius: '12px', padding: '16px', backgroundColor: '#f8fafc' }}>
+                                                        <span style={{ fontSize: '12px', fontWeight: '700', color: '#64748b', textTransform: 'uppercase' }}>Total Días Programados</span>
+                                                        <span style={{ display: 'block', fontSize: '24px', fontWeight: '900', marginTop: '8px' }}>{totalClassDays} días</span>
+                                                    </div>
+                                                    <div style={{ border: '1px solid #e2e8f0', borderRadius: '12px', padding: '16px', backgroundColor: '#f8fafc' }}>
+                                                        <span style={{ fontSize: '12px', fontWeight: '700', color: '#64748b', textTransform: 'uppercase' }}>Horas Programadas</span>
+                                                        <span style={{ display: 'block', fontSize: '24px', fontWeight: '900', marginTop: '8px' }}>{totalScheduledHours.toFixed(1)} hs</span>
+                                                    </div>
+                                                    <div style={{ border: '1px solid #e2e8f0', borderRadius: '12px', padding: '16px', backgroundColor: '#f8fafc' }}>
+                                                        <span style={{ fontSize: '12px', fontWeight: '700', color: '#64748b', textTransform: 'uppercase' }}>Asistencia Promedio</span>
+                                                        <span style={{ display: 'block', fontSize: '24px', fontWeight: '900', marginTop: '8px', color: '#059669' }}>{avgAttendanceHours.toFixed(1)}%</span>
+                                                    </div>
+                                                    <div style={{ border: '1px solid #e2e8f0', borderRadius: '12px', padding: '16px', backgroundColor: '#f8fafc' }}>
+                                                        <span style={{ fontSize: '12px', fontWeight: '700', color: '#64748b', textTransform: 'uppercase' }}>Pérdida (Tardanzas)</span>
+                                                        <span style={{ display: 'block', fontSize: '24px', fontWeight: '900', marginTop: '8px', color: '#d97706' }}>{avgLateHours.toFixed(2)}%</span>
+                                                    </div>
+                                                </div>
+
+                                                {/* CHART 1: Faltas */}
+                                                <div className="print-avoid-break" style={{ border: '1px solid #e2e8f0', borderRadius: '12px', padding: '20px', marginBottom: '24px', backgroundColor: '#ffffff' }}>
+                                                    <h3 style={{ fontSize: '18px', fontWeight: '900', marginBottom: '4px', margin: 0 }}>Registro de Inasistencias (Faltas)</h3>
+                                                    <p style={{ fontSize: '14px', color: '#64748b', marginBottom: '16px', margin: '4px 0 16px 0' }}>Total de días no asistidos por aprendiz</p>
+                                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                                                        {studentMetrics.map(({ student, absentCount, attendanceDaysRate }: any) => {
+                                                            const absenceRate = 100 - attendanceDaysRate;
+                                                            return (
+                                                                <div key={student.id} style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                                                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', fontWeight: '700' }}>
+                                                                        <span>{formatName(student.name, student.profile)}</span>
+                                                                        <span style={{ color: '#dc2626' }}>{absentCount} Faltas ({absenceRate.toFixed(1)}%)</span>
+                                                                    </div>
+                                                                    <div style={{ height: '12px', width: '100%', backgroundColor: '#f1f5f9', borderRadius: '9999px', overflow: 'hidden' }}>
+                                                                        <div style={{ height: '100%', backgroundColor: '#fecdd3', width: `${absenceRate}%` }} />
+                                                                    </div>
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                </div>
+
+                                                {/* CHART 2: Tardanzas */}
+                                                <div className="print-avoid-break" style={{ border: '1px solid #e2e8f0', borderRadius: '12px', padding: '20px', marginBottom: '24px', backgroundColor: '#ffffff' }}>
+                                                    <h3 style={{ fontSize: '18px', fontWeight: '900', marginBottom: '4px', margin: 0 }}>Registro de Llegadas Tarde (Tardanzas)</h3>
+                                                    <p style={{ fontSize: '14px', color: '#64748b', marginBottom: '16px', margin: '4px 0 16px 0' }}>Total de días con llegada tarde por aprendiz</p>
+                                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                                                        {studentMetrics.map(({ student, lateCount, lateDaysRate }: any) => (
+                                                            <div key={student.id} style={{ display: 'flex', flexDirection: 'column', gap: '6px' }} className="print-avoid-break">
+                                                                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', fontWeight: '700' }}>
+                                                                    <span>{formatName(student.name, student.profile)}</span>
+                                                                    <span style={{ color: '#d97706' }}>{lateCount} Tardes ({lateDaysRate.toFixed(1)}%)</span>
+                                                                </div>
+                                                                <div style={{ height: '12px', width: '100%', backgroundColor: '#f1f5f9', borderRadius: '9999px', overflow: 'hidden' }}>
+                                                                    <div style={{ height: '100%', backgroundColor: '#fde68a', width: `${lateDaysRate}%` }} />
+                                                                </div>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </div>
+
+                                                {/* CHART 2b: Retiros */}
+                                                <div className="print-avoid-break" style={{ border: '1px solid #e2e8f0', borderRadius: '12px', padding: '20px', marginBottom: '24px', backgroundColor: '#ffffff' }}>
+                                                    <h3 style={{ fontSize: '18px', fontWeight: '900', marginBottom: '4px', margin: 0 }}>Registro de Retiros Tempranos</h3>
+                                                    <p style={{ fontSize: '14px', color: '#64748b', marginBottom: '16px', margin: '4px 0 16px 0' }}>Total de días con retiro temprano por aprendiz</p>
+                                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                                                        {studentMetrics.map(({ student, leaveCount }: any) => {
+                                                            const leaveDaysRate = totalClassDays > 0 ? (leaveCount / totalClassDays) * 100 : 0;
+                                                            return (
+                                                                <div key={student.id} style={{ display: 'flex', flexDirection: 'column', gap: '6px' }} className="print-avoid-break">
+                                                                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', fontWeight: '700' }}>
+                                                                        <span>{formatName(student.name, student.profile)}</span>
+                                                                        <span style={{ color: '#3b82f6' }}>{leaveCount} Retiros ({leaveDaysRate.toFixed(1)}%)</span>
+                                                                    </div>
+                                                                    <div style={{ height: '12px', width: '100%', backgroundColor: '#f1f5f9', borderRadius: '9999px', overflow: 'hidden' }}>
+                                                                        <div style={{ height: '100%', backgroundColor: '#bae6fd', width: `${leaveDaysRate}%` }} />
+                                                                    </div>
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                </div>
+
+                                                {/* CHART 3: Horas */}
+                                                <div className="print-avoid-break" style={{ border: '1px solid #e2e8f0', borderRadius: '12px', padding: '20px', marginBottom: '24px', backgroundColor: '#ffffff' }}>
+                                                    <h3 style={{ fontSize: '18px', fontWeight: '900', marginBottom: '4px', margin: 0 }}>Carga Horaria y Asistencia Efectiva</h3>
+                                                    <p style={{ fontSize: '14px', color: '#64748b', marginBottom: '16px', margin: '4px 0 16px 0' }}>Horas Asistidas vs Perdidas</p>
+                                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                                                        {studentMetrics.map(({ student, absentHours, lateHours, leaveHours, attendanceHoursRate }: any) => {
+                                                            const lostHours = absentHours + lateHours + leaveHours;
+                                                            const attendedHours = Math.max(0, totalScheduledHours - lostHours);
+                                                            return (
+                                                                <div key={student.id} style={{ display: 'flex', flexDirection: 'column', gap: '8px', borderBottom: '1px solid #f1f5f9', paddingBottom: '12px' }}>
+                                                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '14px', fontWeight: '700' }}>
+                                                                        <span>{formatName(student.name, student.profile)}</span>
+                                                                        <div style={{ display: 'flex', gap: '16px', fontSize: '12px' }}>
+                                                                            <span style={{ color: '#059669' }}>Asistidas: {attendedHours.toFixed(1)} hs</span>
+                                                                            <span style={{ color: '#ef4444' }}>Perdidas: {lostHours.toFixed(1)} hs</span>
+                                                                            <span style={{ color: '#2563eb' }}>Efectiva: {attendanceHoursRate.toFixed(1)}%</span>
+                                                                        </div>
+                                                                    </div>
+                                                                    <div style={{ height: '12px', width: '100%', backgroundColor: '#f1f5f9', borderRadius: '9999px', overflow: 'hidden', display: 'flex' }}>
+                                                                        <div style={{ height: '100%', backgroundColor: '#a7f3d0', width: `${attendanceHoursRate}%` }} />
+                                                                        {absentHours > 0 && <div style={{ height: '100%', backgroundColor: '#fecdd3', width: `${(absentHours / totalScheduledHours) * 100}%` }} />}
+                                                                        {lateHours > 0 && <div style={{ height: '100%', backgroundColor: '#fde68a', width: `${(lateHours / totalScheduledHours) * 100}%` }} />}
+                                                                        {leaveHours > 0 && <div style={{ height: '100%', backgroundColor: '#bae6fd', width: `${(leaveHours / totalScheduledHours) * 100}%` }} />}
+                                                                    </div>
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </Tabs>
+                                    );
+                                })() : attMode === "history" ? (() => {
+                                    // MODE 4: HISTORIAL VIEW
+                                    const studentsWithNovedades = selectedGroup.students?.filter((student: any) => {
+                                        if (historyStudentFilter !== "all" && student.id !== historyStudentFilter) {
+                                            return false;
+                                        }
+                                        const studentRecords = attendanceHistory.filter((rec: any) => {
+                                            if (rec.courseId !== attCourseId || rec.userId !== student.id || rec.status === "PRESENT") return false;
+                                            if (historyScheduleScope === "current") return isRecordInCurrentSchedule(rec, attCourseId);
+                                            if (historyScheduleScope === "previous") return !isRecordInCurrentSchedule(rec, attCourseId);
+                                            return true;
+                                        });
+                                        if (studentRecords.length === 0) return false;
+
+                                        if (searchQuery) {
+                                            const q = searchQuery.toLowerCase();
+                                            return student.name.toLowerCase().includes(q) || 
+                                                   student.profile?.identificacion?.toLowerCase().includes(q);
+                                        }
+                                        return true;
+                                    });
+
+                                    const sortedStudentsWithNovedades = [...(studentsWithNovedades || [])].sort((a: any, b: any) => {
+                                        const getCount = (stId: string) => attendanceHistory.filter((rec: any) => {
+                                            if (rec.courseId !== attCourseId || rec.userId !== stId || rec.status === "PRESENT") return false;
+                                            if (historyScheduleScope === "current") return isRecordInCurrentSchedule(rec, attCourseId);
+                                            if (historyScheduleScope === "previous") return !isRecordInCurrentSchedule(rec, attCourseId);
+                                            return true;
+                                        }).length;
+                                        return getCount(b.id) - getCount(a.id);
+                                    });
+
+                                    const totalRecordsCount = attendanceHistory.filter((rec: any) => {
+                                        if (rec.courseId !== attCourseId || rec.status === "PRESENT") return false;
+                                        if (!selectedGroup.students?.some((s: any) => s.id === rec.userId)) return false;
+                                        if (historyStudentFilter !== "all" && rec.userId !== historyStudentFilter) return false;
+                                        if (historyScheduleScope === "current") return isRecordInCurrentSchedule(rec, attCourseId);
+                                        if (historyScheduleScope === "previous") return !isRecordInCurrentSchedule(rec, attCourseId);
+                                        return true;
+                                    }).length;
+
+                                    return (
+                                        <div className="space-y-4">
+                                            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-2 gap-4">
+                                                <div className="flex flex-col gap-1">
+                                                    <Badge variant="outline" className="bg-primary/10 text-primary border-primary/20 w-fit">
+                                                        <History className="w-3.5 h-3.5 mr-1" />
+                                                        Historial de Asistencia Agrupado por Aprendiz
+                                                    </Badge>
+                                                    <span className="text-xs font-semibold text-muted-foreground">
+                                                        {totalRecordsCount} Registros en total ({sortedStudentsWithNovedades.length} Aprendices)
+                                                    </span>
+                                                </div>
+                                                <div className="flex gap-2">
+                                                    <Button variant="outline" size="sm" onClick={exportHistoryToExcel}>
+                                                        <FileSpreadsheet className="w-4 h-4 mr-2 text-emerald-600" /> Excel
+                                                    </Button>
+                                                    <Button variant="outline" size="sm" onClick={exportHistoryToPDF}>
+                                                        <FileDown className="w-4 h-4 mr-2 text-red-600" /> PDF
+                                                    </Button>
+                                                </div>
+                                            </div>
+
+                                            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 bg-muted/20 p-3 sm:p-4 rounded-xl border border-border/40 mb-4 w-full">
+                                                <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto">
+                                                    <div className="flex items-center gap-2">
+                                                        <span className="text-xs font-bold text-muted-foreground uppercase tracking-widest shrink-0">Filtrar Aprendiz:</span>
+                                                        <Select value={historyStudentFilter} onValueChange={setHistoryStudentFilter}>
+                                                            <SelectTrigger className="h-9 rounded-lg border-muted-foreground/20 font-semibold bg-background text-xs w-full sm:w-[220px]">
+                                                                <SelectValue placeholder="Seleccionar Aprendiz" />
+                                                            </SelectTrigger>
+                                                            <SelectContent>
+                                                                <SelectItem value="all" className="font-semibold text-xs">👥 Todos los aprendices</SelectItem>
+                                                                {selectedGroup.students?.map((s: any) => (
+                                                                    <SelectItem key={s.id} value={s.id} className="font-semibold text-xs">
+                                                                        {formatName(s.name, s.profile)}
+                                                                    </SelectItem>
+                                                                ))}
+                                                            </SelectContent>
+                                                        </Select>
+                                                    </div>
+
+                                                    <div className="flex items-center gap-2">
+                                                        <span className="text-xs font-bold text-muted-foreground uppercase tracking-widest shrink-0">Horarios:</span>
+                                                        <Select value={historyScheduleScope} onValueChange={(v: any) => setHistoryScheduleScope(v)}>
+                                                            <SelectTrigger className="h-9 rounded-lg border-muted-foreground/20 font-semibold bg-background text-xs w-full sm:w-[210px]">
+                                                                <SelectValue placeholder="Seleccionar Horario" />
+                                                            </SelectTrigger>
+                                                            <SelectContent>
+                                                                <SelectItem value="all" className="font-semibold text-xs">👥 Todos los Horarios</SelectItem>
+                                                                <SelectItem value="current" className="font-semibold text-xs">📅 Horario Actual (Vigente)</SelectItem>
+                                                                <SelectItem value="previous" className="font-semibold text-xs">⏳ Horarios Anteriores</SelectItem>
+                                                            </SelectContent>
+                                                        </Select>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            {sortedStudentsWithNovedades.length === 0 ? (
+                                                <div className="flex flex-col items-center justify-center py-16 text-center space-y-4 rounded-2xl border border-dashed bg-card shadow-sm">
+                                                    <div className="p-3 bg-muted rounded-full text-muted-foreground">
+                                                        <History className="w-8 h-8" />
+                                                    </div>
+                                                    <div className="space-y-1">
+                                                        <h3 className="font-black text-lg text-foreground">Sin registros históricos</h3>
+                                                        <p className="text-sm text-muted-foreground max-w-sm">No se han encontrado registros de inasistencias o tardanzas para esta materia.</p>
+                                                    </div>
+                                                </div>
+                                            ) : (
+                                                <div ref={historyRef} id="history-table-container" className="space-y-4 bg-background p-2 rounded-xl">
+                                                    {sortedStudentsWithNovedades.map((student: any) => {
+                                                        const allStudentRecords = attendanceHistory.filter((rec: any) => 
+                                                            rec.courseId === attCourseId && 
+                                                            rec.userId === student.id && 
+                                                            rec.status !== "PRESENT"
+                                                        );
+                                                        const currentRecords = allStudentRecords
+                                                            .filter(r => isRecordInCurrentSchedule(r, attCourseId))
+                                                            .sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+                                                        const previousRecords = allStudentRecords
+                                                            .filter(r => !isRecordInCurrentSchedule(r, attCourseId))
+                                                            .sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+                                                        const recordsToDisplay = historyScheduleScope === "current"
+                                                            ? currentRecords
+                                                            : historyScheduleScope === "previous"
+                                                                ? previousRecords
+                                                                : allStudentRecords;
+
+                                                        const absentCount = recordsToDisplay.filter(r => r.status === "ABSENT").length;
+                                                        const lateCount = recordsToDisplay.filter(r => r.status === "LATE").length;
+                                                        const leaveEarlyCount = recordsToDisplay.filter(r => r.status === "LEAVE_EARLY").length;
+
+                                                        const renderHistoryRow = (rec: any, isPreviousRecord: boolean) => {
+                                                            const isAbsent = rec.status === "ABSENT";
+                                                            const isLate = rec.status === "LATE";
+                                                            const isLeaveEarly = rec.status === "LEAVE_EARLY";
+                                                            const formattedDate = formatCalendarDate(rec.date, "dd/MM/yyyy");
+                                                            
+                                                            return (
+                                                                <TableRow key={rec.id} className="hover:bg-muted/5 transition-colors">
+                                                                    <TableCell className="pl-6 py-3 font-semibold text-xs text-foreground/80">
+                                                                        <div className="flex items-center gap-1.5 flex-wrap">
+                                                                            <span>{formattedDate}</span>
+                                                                            {isPreviousRecord && (
+                                                                                <span className="text-[9px] uppercase px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-700 dark:text-amber-400 font-bold border border-amber-500/20">
+                                                                                    Anterior
+                                                                                </span>
+                                                                            )}
+                                                                        </div>
+                                                                    </TableCell>
+                                                                    <TableCell className="text-center py-3">
+                                                                        <Badge variant="outline" className={`font-bold text-[10px] uppercase px-2 py-0.5 rounded-md ${
+                                                                            isAbsent 
+                                                                                ? 'text-rose-800 border-rose-300 bg-rose-100/70 dark:text-rose-200 dark:border-rose-700/60 dark:bg-rose-950/60' 
+                                                                                : isLate
+                                                                                    ? 'text-amber-900 border-amber-300 bg-amber-100/70 dark:text-amber-200 dark:border-amber-700/60 dark:bg-amber-950/60'
+                                                                                    : 'text-sky-900 border-sky-300 bg-sky-100/70 dark:text-sky-200 dark:border-sky-700/60 dark:bg-sky-950/60'
+                                                                        }`}>
+                                                                            {isAbsent ? "Falta" : isLate ? "Tarde" : "Retiro"}
+                                                                        </Badge>
+                                                                    </TableCell>
+                                                                    <TableCell className="text-center text-xs py-3 font-medium text-foreground/70">
+                                                                         {isLate && rec.arrivalTime ? (
+                                                                             <span className="font-mono bg-amber-100/70 text-amber-900 dark:bg-amber-950/40 dark:text-amber-300 px-2 py-0.5 rounded text-[11px] border border-amber-200/60 dark:border-amber-800/40">
+                                                                                 {formatTime12h(rec.arrivalTime)}
+                                                                             </span>
+                                                                         ) : isLeaveEarly && rec.departureTime ? (
+                                                                             <span className="font-mono bg-sky-100/70 text-sky-900 dark:bg-sky-950/40 dark:text-sky-300 px-2 py-0.5 rounded text-[11px] border border-sky-200/60 dark:border-sky-800/40">
+                                                                                 {formatTime12h(rec.departureTime)}
+                                                                             </span>
+                                                                         ) : (
+                                                                             <span className="text-muted-foreground text-[11px]">Día completo</span>
+                                                                         )}
+                                                                    </TableCell>
+                                                                    <TableCell className="text-xs py-3 max-w-[200px]">
+                                                                        {(() => {
+                                                                            const linkUrl = getJustificationLink(rec);
+                                                                            const hasText = !!(rec.justification && rec.justification.trim().length > 0);
+                                                                            const hasLink = !!linkUrl;
+
+                                                                            if (!hasText && !hasLink) {
+                                                                                return <span className="text-muted-foreground/60 italic text-[11px]">Sin justificación</span>;
+                                                                            }
+
+                                                                            return (
+                                                                                <Button
+                                                                                    type="button"
+                                                                                    variant="outline"
+                                                                                    size="sm"
+                                                                                    className="h-7 px-2.5 text-xs font-semibold text-primary border-primary/30 hover:bg-primary/10 rounded-lg gap-1.5 shadow-xs"
+                                                                                    onClick={() => setViewJustificationDialog({
+                                                                                        open: true,
+                                                                                        studentName: formatName(student.name, student.profile),
+                                                                                        studentId: student.profile?.identificacion,
+                                                                                        date: formattedDate,
+                                                                                        status: isAbsent ? "Falta" : isLate ? "Tarde" : "Retiro",
+                                                                                        justification: rec.justification || "",
+                                                                                        linkUrl
+                                                                                    })}
+                                                                                >
+                                                                                    <Eye className="w-3.5 h-3.5 text-primary" />
+                                                                                    Ver justificación
+                                                                                </Button>
+                                                                            );
+                                                                        })()}
+                                                                    </TableCell>
+                                                                    <TableCell className="text-right pr-6 py-3">
+                                                                        <Button 
+                                                                            size="sm" 
+                                                                            variant="ghost" 
+                                                                            disabled={isSavingAtt}
+                                                                            onClick={() => {
+                                                                                setAttendanceToDelete({
+                                                                                    studentId: student.id,
+                                                                                    studentName: formatName(student.name, student.profile),
+                                                                                    date: rec.date
+                                                                                });
+                                                                            }}
+                                                                            className="h-7 px-2.5 text-xs text-destructive hover:text-destructive hover:bg-destructive/10 font-bold"
+                                                                        >
+                                                                            Eliminar
+                                                                        </Button>
+                                                                    </TableCell>
+                                                                </TableRow>
+                                                            );
+                                                        };
+
+                                                        return (
+                                                            <div key={student.id} className="print-avoid-break rounded-2xl border bg-card shadow-sm overflow-hidden hover:border-primary/20 transition-all duration-200">
+                                                                {/* Student Header summary */}
+                                                                <div className="bg-muted/30 px-6 py-4 flex flex-wrap items-center justify-between gap-4 border-b">
+                                                                    <div className="flex items-center gap-3">
+                                                                        <Avatar className="w-10 h-10 border-2 border-background shadow-sm">
+                                                                            <AvatarImage src={student.image} />
+                                                                            <AvatarFallback className="bg-primary/10 text-primary text-sm font-black">
+                                                                                {student.name?.substring(0, 2).toUpperCase()}
+                                                                            </AvatarFallback>
+                                                                        </Avatar>
+                                                                        <div>
+                                                                            <h4 className="font-bold text-sm text-foreground">
+                                                                                {formatName(student.name, student.profile)}
+                                                                            </h4>
+                                                                            <p className="text-xs text-muted-foreground font-mono mt-0.5">
+                                                                                ID: {student.profile?.identificacion || "—"}
+                                                                            </p>
+                                                                        </div>
+                                                                    </div>
+
+                                                                    <div className="flex items-center gap-2">
+                                                                        {historyScheduleScope === "all" ? (
+                                                                            <>
+                                                                                {currentRecords.filter(r => r.status === "ABSENT").length > 0 && (
+                                                                                    <Badge className="bg-rose-100/70 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200 border border-rose-200/60 dark:border-rose-800/40 font-extrabold shadow-none px-2.5 py-0.5 rounded-full text-xs">
+                                                                                        {currentRecords.filter(r => r.status === "ABSENT").length} {currentRecords.filter(r => r.status === "ABSENT").length === 1 ? "Falta (Actual)" : "Faltas (Actual)"}
+                                                                                    </Badge>
+                                                                                )}
+                                                                                {previousRecords.filter(r => r.status === "ABSENT").length > 0 && (
+                                                                                    <Badge variant="outline" className="bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/30 font-bold shadow-none px-2.5 py-0.5 rounded-full text-xs">
+                                                                                        ⏳ {previousRecords.filter(r => r.status === "ABSENT").length} en anteriores
+                                                                                    </Badge>
+                                                                                )}
+                                                                                {absentCount > 0 && (
+                                                                                    <Badge variant="secondary" className="font-extrabold text-xs px-2.5 py-0.5 rounded-full">
+                                                                                        Total: {absentCount} {absentCount === 1 ? "Falta" : "Faltas"}
+                                                                                    </Badge>
+                                                                                )}
+                                                                            </>
+                                                                        ) : (
+                                                                            absentCount > 0 && (
+                                                                                <Badge className="bg-rose-100/70 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200 border border-rose-200/60 dark:border-rose-800/40 font-extrabold shadow-none px-2.5 py-0.5 rounded-full text-xs">
+                                                                                    {absentCount} {absentCount === 1 ? "Falta" : "Faltas"}
+                                                                                </Badge>
+                                                                            )
+                                                                        )}
+                                                                        {lateCount > 0 && (
+                                                                            <Badge className="bg-amber-100/70 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 border border-amber-200/60 dark:border-amber-800/40 font-extrabold shadow-none px-2.5 py-0.5 rounded-full text-xs">
+                                                                                {lateCount} {lateCount === 1 ? "Llegada Tarde" : "Llegadas Tardes"}
+                                                                            </Badge>
+                                                                        )}
+                                                                        {leaveEarlyCount > 0 && (
+                                                                            <Badge className="bg-sky-100/70 dark:bg-sky-950/40 text-sky-900 dark:text-sky-200 border border-sky-200/60 dark:border-sky-800/40 font-extrabold shadow-none px-2.5 py-0.5 rounded-full text-xs">
+                                                                                {leaveEarlyCount} {leaveEarlyCount === 1 ? "Retiro" : "Retiros"}
+                                                                            </Badge>
+                                                                        )}
+                                                                    </div>
+                                                                </div>
+
+                                                                {/* Detail Records List inside Student card */}
+                                                                <div 
+                                                                    className="overflow-x-auto overflow-y-hidden overscroll-x-contain overscroll-y-auto scrollbar-thin"
+                                                                    style={{
+                                                                        WebkitOverflowScrolling: "touch",
+                                                                        touchAction: "pan-x pan-y",
+                                                                        overscrollBehaviorX: "contain",
+                                                                        overscrollBehaviorY: "auto"
+                                                                    }}
+                                                                >
+                                                                    <Table>
+                                                                        <TableHeader className="bg-muted/10">
+                                                                            <TableRow className="hover:bg-transparent">
+                                                                                <TableHead className="pl-6 w-[140px] text-xs font-bold uppercase tracking-wider text-muted-foreground">Fecha</TableHead>
+                                                                                <TableHead className="w-[140px] text-center text-xs font-bold uppercase tracking-wider text-muted-foreground">Novedad</TableHead>
+                                                                                <TableHead className="w-[160px] text-center text-xs font-bold uppercase tracking-wider text-muted-foreground">Detalle / Hora</TableHead>
+                                                                                <TableHead className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Justificación</TableHead>
+                                                                                <TableHead className="w-[120px] text-right pr-6 text-xs font-bold uppercase tracking-wider text-muted-foreground">Acción</TableHead>
+                                                                            </TableRow>
+                                                                        </TableHeader>
+                                                                        <TableBody>
+                                                                            {historyScheduleScope === "all" ? (
+                                                                                <>
+                                                                                    {/* Grupo Horario Actual */}
+                                                                                    <TableRow className="bg-emerald-500/10 hover:bg-emerald-500/10 border-y border-emerald-500/20">
+                                                                                        <TableCell colSpan={5} className="py-2.5 pl-6">
+                                                                                            <div className="flex items-center justify-between">
+                                                                                                <span className="font-extrabold text-xs text-emerald-800 dark:text-emerald-300 flex items-center gap-2">
+                                                                                                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                                                                                                    📅 Horario Actual (Vigente)
+                                                                                                </span>
+                                                                                                <Badge variant="outline" className="border-emerald-500/30 text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 text-[10px] font-extrabold px-2 py-0.5">
+                                                                                                    {currentRecords.length} {currentRecords.length === 1 ? 'registro' : 'registros'}
+                                                                                                </Badge>
+                                                                                            </div>
+                                                                                        </TableCell>
+                                                                                    </TableRow>
+                                                                                    {currentRecords.length > 0 ? (
+                                                                                        currentRecords.map(rec => renderHistoryRow(rec, false))
+                                                                                    ) : (
+                                                                                        <TableRow>
+                                                                                            <TableCell colSpan={5} className="text-center py-2.5 text-xs text-muted-foreground italic bg-muted/5">
+                                                                                                Sin registros de inasistencias ni novedades en el horario actual.
+                                                                                            </TableCell>
+                                                                                        </TableRow>
+                                                                                    )}
+
+                                                                                    {/* Grupo Horarios Anteriores */}
+                                                                                    {previousRecords.length > 0 && (
+                                                                                        <>
+                                                                                            <TableRow className="bg-amber-500/10 hover:bg-amber-500/10 border-y border-amber-500/20">
+                                                                                                <TableCell colSpan={5} className="py-2.5 pl-6">
+                                                                                                    <div className="flex items-center justify-between">
+                                                                                                        <span className="font-extrabold text-xs text-amber-800 dark:text-amber-300 flex items-center gap-2">
+                                                                                                            <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+                                                                                                            ⏳ Horarios Anteriores (Histórico)
+                                                                                                        </span>
+                                                                                                        <Badge variant="outline" className="border-amber-500/30 text-amber-700 dark:text-amber-300 bg-amber-500/10 text-[10px] font-extrabold px-2 py-0.5">
+                                                                                                            {previousRecords.length} {previousRecords.length === 1 ? 'registro' : 'registros'}
+                                                                                                        </Badge>
+                                                                                                    </div>
+                                                                                                </TableCell>
+                                                                                            </TableRow>
+                                                                                            {previousRecords.map(rec => renderHistoryRow(rec, true))}
+                                                                                        </>
+                                                                                    )}
+
+                                                                                    {currentRecords.length === 0 && previousRecords.length === 0 && (
+                                                                                        <TableRow>
+                                                                                            <TableCell colSpan={5} className="text-center py-6 text-xs text-muted-foreground italic">
+                                                                                                Sin registros de novedades.
+                                                                                            </TableCell>
+                                                                                        </TableRow>
+                                                                                    )}
+                                                                                </>
+                                                                            ) : (
+                                                                                <>
+                                                                                    {recordsToDisplay.length === 0 ? (
+                                                                                        <TableRow>
+                                                                                            <TableCell colSpan={5} className="text-center py-6 text-xs text-muted-foreground italic">
+                                                                                                Sin registros de novedades en este período.
+                                                                                            </TableCell>
+                                                                                        </TableRow>
+                                                                                    ) : (
+                                                                                        recordsToDisplay.map((rec: any) => renderHistoryRow(rec, historyScheduleScope === "previous"))
+                                                                                    )}
+                                                                                </>
+                                                                            )}
+                                                                        </TableBody>
+                                                                    </Table>
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                })() : (() => {
+                                    // MODE 3: MATRIX / PLANILLA VIEW
+                                    // Build the list of class days for the selected course
+                                    const course = selectedGroup.courses?.find((c: any) => c.id === attCourseId);
+                                    const scheduleDays: string[] = (course?.schedules || []).map((s: any) => s.dayOfWeek);
+                                    const dayIndexMap: Record<string, number> = {
+                                        SUNDAY: 0, MONDAY: 1, TUESDAY: 2, WEDNESDAY: 3,
+                                        THURSDAY: 4, FRIDAY: 5, SATURDAY: 6
+                                    };
+
+                                    // Helpers for timezone-safe date management
+                                    const toUTCDateStr = (date: Date) => {
+                                        const y = date.getUTCFullYear();
+                                        const m = String(date.getUTCMonth() + 1).padStart(2, "0");
+                                        const d = String(date.getUTCDate()).padStart(2, "0");
+                                        return `${y}-${m}-${d}`;
+                                    };
+
+                                    const toLocalDateStr = (date: Date) => {
+                                        const y = date.getFullYear();
+                                        const m = String(date.getMonth() + 1).padStart(2, "0");
+                                        const d = String(date.getDate()).padStart(2, "0");
+                                        return `${y}-${m}-${d}`;
+                                    };
+
+                                    // Fallback: use all group schedules if this course has none
+                                    const effectiveScheduleDays: string[] = scheduleDays.length > 0
+                                        ? scheduleDays
+                                        : (selectedGroup.courses || []).flatMap((c: any) => (c.schedules || []).map((s: any) => s.dayOfWeek));
+
+                                    // Derive start and end date using effective schedule bounds
+                                    const { start: effectiveStart, end: effectiveEnd } = getEffectiveDatesForCourse(selectedGroup, attCourseId);
+
+                                    const attForCourse = attendanceHistory.filter((a: any) => a.courseId === attCourseId);
+                                    const earliestAtt = attForCourse.length > 0
+                                        ? new Date(Math.min(...attForCourse.map((a: any) => new Date(a.date).getTime())))
+                                        : null;
+
+                                    const threeMonthsAgo = new Date();
+                                    threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+
+                                    const startDate = effectiveStart
+                                        ? new Date(effectiveStart)
+                                        : (earliestAtt ?? threeMonthsAgo);
+
+                                    const endDate = effectiveEnd
+                                        ? new Date(effectiveEnd)
+                                        : new Date();
+
+                                    const classDays: Date[] = [];
+                                    const cur = new Date(startDate);
+                                    cur.setUTCHours(12, 0, 0, 0); // stable UTC noon to avoid shifting days
+                                    const end = new Date(endDate);
+                                    end.setUTCHours(12, 0, 0, 0);
+
+                                    while (cur <= end) {
+                                        const jsDay = cur.getUTCDay();
+                                        const isClassDay = effectiveScheduleDays.some(d => dayIndexMap[d] === jsDay);
+                                        if (isClassDay) classDays.push(new Date(cur));
+                                        cur.setUTCDate(cur.getUTCDate() + 1);
+                                    }
+
+                                    // If still no scheduled days derived, build from actual attendance dates within schedule bounds
+                                    const startLimit = effectiveStart ? new Date(toISODateString(effectiveStart) + "T12:00:00Z") : null;
+                                    const endLimit = effectiveEnd ? new Date(toISODateString(effectiveEnd) + "T12:00:00Z") : null;
+                                    const boundedAttDates = attForCourse
+                                        .map((a: any) => toUTCDateStr(new Date(a.date)))
+                                        .filter((ds: string) => {
+                                            const dt = new Date(ds + "T12:00:00Z");
+                                            return (!startLimit || dt >= startLimit) && (!endLimit || dt <= endLimit);
+                                        });
+
+                                    const finalDays: Date[] = classDays.length > 0
+                                        ? classDays
+                                        : Array.from(new Set(boundedAttDates))
+                                            .sort()
+                                            .map(ds => new Date(ds + "T12:00:00Z"));
+
+                                    // Build a lookup: userId → date string → { status, justification, arrivalTime, departureTime }
+                                    const lookup: Record<string, Record<string, { status: string; justification?: string; arrivalTime?: string; departureTime?: string }>> = {};
+                                    attendanceHistory.filter((a: any) => a.courseId === attCourseId).forEach((a: any) => {
+                                        if (!lookup[a.userId]) lookup[a.userId] = {};
+                                        const ds = toUTCDateStr(new Date(a.date));
+                                        const arrTime = extractTimeHHmm(a.arrivalTime) || undefined;
+                                        const depTime = extractTimeHHmm(a.departureTime) || undefined;
+                                        lookup[a.userId][ds] = {
+                                            status: a.status,
+                                            justification: a.justification || undefined,
+                                            arrivalTime: arrTime,
+                                            departureTime: depTime
+                                        };
+                                    });
+
+                                    const statusCell = (record: { status: string; justification?: string; arrivalTime?: string; departureTime?: string } | undefined) => {
+                                        if (!record || record.status === "PRESENT") return (
+                                            <span className="inline-flex items-center justify-center w-8 h-8 rounded-lg text-xs font-black bg-emerald-100/70 text-emerald-800 border border-emerald-200/60 dark:bg-emerald-950/60 dark:text-emerald-200 dark:border-emerald-700/60 shadow-2xs">P</span>
+                                        );
+                                        if (record.justification) return (
+                                            <span className="inline-flex items-center justify-center w-8 h-8 rounded-lg text-xs font-black bg-indigo-100/70 text-indigo-800 border border-indigo-200/60 dark:bg-indigo-950/60 dark:text-indigo-200 dark:border-indigo-700/60 shadow-2xs">E</span>
+                                        );
+                                        if ((record.status === "LATE" || record.status === "LEAVE_EARLY") && record.arrivalTime && record.departureTime) {
+                                            return (
+                                                <span className="inline-flex items-center justify-center w-8 h-8 rounded-lg text-[10px] font-black bg-amber-100/70 text-amber-900 border border-amber-300 dark:bg-amber-950/60 dark:text-amber-200 dark:border-amber-700/60 shadow-2xs">T+R</span>
+                                            );
+                                        }
+                                        if (record.status === "LATE") return (
+                                            <span className="inline-flex items-center justify-center w-8 h-8 rounded-lg text-xs font-black bg-amber-100/70 text-amber-900 border border-amber-200/60 dark:bg-amber-950/60 dark:text-amber-200 dark:border-amber-700/60 shadow-2xs">T</span>
+                                        );
+                                        if (record.status === "LEAVE_EARLY") return (
+                                            <span className="inline-flex items-center justify-center w-8 h-8 rounded-lg text-xs font-black bg-sky-100/70 text-sky-900 border border-sky-200/60 dark:bg-sky-950/60 dark:text-sky-200 dark:border-sky-700/60 shadow-2xs">R</span>
+                                        );
+                                        if (record.status === "ABSENT") return (
+                                            <span className="inline-flex items-center justify-center w-8 h-8 rounded-lg text-xs font-black bg-rose-100/70 text-rose-800 border border-rose-200/60 dark:bg-rose-950/60 dark:text-rose-200 dark:border-rose-700/60 shadow-2xs">F</span>
+                                        );
+                                        return (
+                                            <span className="inline-flex items-center justify-center w-8 h-8 rounded-lg text-xs font-black bg-indigo-100/70 text-indigo-800 border border-indigo-200/60 dark:bg-indigo-950/60 dark:text-indigo-200 dark:border-indigo-700/60 shadow-2xs">E</span>
+                                        );
+                                    };
+
+                                    // Filter days if selectedDayFilter is set
+                                    const displayedDays = selectedDayFilter !== null
+                                        ? finalDays.filter(d => d.getUTCDay() === selectedDayFilter)
+                                        : finalDays;
+
+                                    return (
+                                        <div className="space-y-3">
+                                            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 px-1 mb-2">
+                                                 <Badge variant="outline" className="bg-primary/10 text-primary border-primary/20 w-fit">
+                                                    <LayoutList className="w-3.5 h-3.5 mr-1" />
+                                                    Planilla de Asistencia General
+                                                </Badge>
+                                                <div className="flex gap-2">
+                                                    <Button variant="outline" size="sm" onClick={exportMatrixToExcel}>
+                                                        <FileSpreadsheet className="w-4 h-4 mr-2 text-emerald-600" /> Excel
+                                                    </Button>
+                                                    <Button variant="outline" size="sm" onClick={exportMatrixToPDF}>
+                                                        <FileDown className="w-4 h-4 mr-2 text-red-600" /> PDF
+                                                    </Button>
+                                                </div>
+                                            </div>
+                                            {/* Legend */}
+                                            <div ref={matrixRef} className="bg-background rounded-xl">
+                                                <div className="flex flex-wrap items-center gap-3 px-1 mb-3">
+                                                    <span className="text-xs font-bold text-muted-foreground uppercase tracking-widest shrink-0">Leyenda:</span>
+                                                    <span className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground shrink-0">
+                                                        <span className="inline-flex items-center justify-center w-6 h-6 rounded text-xs font-black bg-emerald-100/70 text-emerald-800 border border-emerald-200/60 dark:bg-emerald-950/60 dark:text-emerald-200 dark:border-emerald-700/60">P</span> Presente
+                                                    </span>
+                                                    <span className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground shrink-0">
+                                                        <span className="inline-flex items-center justify-center w-6 h-6 rounded text-xs font-black bg-amber-100/70 text-amber-900 border border-amber-200/60 dark:bg-amber-950/60 dark:text-amber-200 dark:border-amber-700/60">T</span> Tarde
+                                                    </span>
+                                                    <span className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground shrink-0">
+                                                        <span className="inline-flex items-center justify-center w-6 h-6 rounded text-xs font-black bg-rose-100/70 text-rose-800 border border-rose-200/60 dark:bg-rose-950/60 dark:text-rose-200 dark:border-rose-700/60">F</span> Falta</span>
+                                                    <span className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground shrink-0">
+                                                        <span className="inline-flex items-center justify-center w-6 h-6 rounded text-xs font-black bg-sky-100/70 text-sky-900 border border-sky-200/60 dark:bg-sky-950/60 dark:text-sky-200 dark:border-sky-700/60">R</span> Retiro
+                                                    </span>
+                                                    <span className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground shrink-0">
+                                                        <span className="inline-flex items-center justify-center w-6 h-6 rounded text-xs font-black bg-indigo-100/70 text-indigo-800 border border-indigo-200/60 dark:bg-indigo-950/60 dark:text-indigo-200 dark:border-indigo-700/60">E</span> Excusa
+                                                    </span>
+                                                    <span className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground shrink-0">
+                                                        <span className="inline-flex items-center justify-center w-6 h-6 rounded text-[10px] font-black bg-rose-600 text-white border border-rose-700 shadow-2xs">FEST</span> Festivo
+                                                    </span>
+
+                                                    {/* Quick selection day filters */}
+                                                    <div className="w-px h-5 bg-border mx-1 shrink-0" />
+                                                    <span className="text-xs font-bold text-muted-foreground uppercase tracking-widest shrink-0">Filtrar Día:</span>
+                                                    <div className="flex gap-1 bg-muted/60 p-0.5 rounded-lg border border-border/40 shrink-0">
+                                                        {([
+                                                            { value: null, label: "Todos" },
+                                                            { value: 1, label: "Lun" },
+                                                            { value: 2, label: "Mar" },
+                                                            { value: 3, label: "Mié" },
+                                                            { value: 4, label: "Jue" },
+                                                            { value: 5, label: "Vie" },
+                                                            { value: 6, label: "Sáb" },
+                                                            { value: 0, label: "Dom" }
+                                                        ]).map(({ value, label }) => {
+                                                            const isSelected = selectedDayFilter === value;
+                                                            const hasDays = value === null || finalDays.some(d => d.getUTCDay() === value);
+                                                            if (!hasDays) return null;
+
+                                                            return (
+                                                                <button
+                                                                    key={label}
+                                                                    type="button"
+                                                                    onClick={() => setSelectedDayFilter(value)}
+                                                                    className={`px-2 py-0.5 rounded text-[11px] font-bold transition-all cursor-pointer ${
+                                                                        isSelected 
+                                                                            ? "bg-background shadow-xs text-primary border border-border/40" 
+                                                                            : "text-muted-foreground hover:text-foreground"
+                                                                    }`}
+                                                                >
+                                                                    {label}
+                                                                </button>
+                                                            );
+                                                        })}
+                                                    </div>
+
+                                                    <span className="ml-auto text-xs text-muted-foreground shrink-0">
+                                                        {displayedDays.filter(d => !isColombianHoliday(toUTCDateStr(d))).length} clases hábiles {displayedDays.some(d => isColombianHoliday(toUTCDateStr(d))) ? `(${displayedDays.filter(d => isColombianHoliday(toUTCDateStr(d))).length} festivos)` : ""} · {selectedGroup.students?.length || 0} aprendices
+                                                    </span>
+                                                </div>
+
+                                                {displayedDays.length === 0 ? (
+                                                    <div className="flex flex-col items-center justify-center py-16 border border-dashed rounded-xl text-muted-foreground">
+                                                        <LayoutList className="w-10 h-10 mb-3 opacity-30" />
+                                                        <p className="font-semibold">Sin clases registradas para este filtro</p>
+                                                        <p className="text-sm mt-1">Selecciona otro día o restablece el filtro a "Todos"</p>
+                                                    </div>
+                                                ) : (
+                                                    <TooltipProvider>
+                                                        {/* Indicador móvil para deslizar fecha */}
+                                                        <div className="flex items-center justify-between px-3 py-1.5 bg-muted/40 border border-border/60 border-b-0 text-xs text-muted-foreground sm:hidden rounded-t-2xl">
+                                                            <span className="flex items-center gap-1 text-[11px] font-semibold text-muted-foreground">
+                                                                <ChevronLeft className="w-3.5 h-3.5 text-primary animate-pulse" />
+                                                                Desliza para ver todas las fechas
+                                                                <ChevronRight className="w-3.5 h-3.5 text-primary animate-pulse" />
+                                                            </span>
+                                                            <span className="text-[10px] font-mono text-muted-foreground/80 font-bold">
+                                                                {displayedDays.length} clases
+                                                            </span>
+                                                        </div>
+                                                        <div 
+                                                            id="matrix-table-container" 
+                                                            className="overflow-x-auto overflow-y-hidden w-full max-w-full overscroll-x-contain overscroll-y-auto sm:rounded-2xl rounded-b-2xl border border-border/60 shadow-sm bg-background scrollbar-thin"
+                                                            style={{
+                                                                WebkitOverflowScrolling: "touch",
+                                                                touchAction: "pan-x pan-y",
+                                                                overscrollBehaviorX: "contain",
+                                                                overscrollBehaviorY: "auto"
+                                                            }}
+                                                        >
+                                                        <table className="text-xs border-collapse min-w-max w-full">
+                                                            <thead>
+                                                                <tr className="print-avoid-break bg-muted/40 sticky top-0 z-10">
+                                                                    <th className="sm:sticky sm:left-0 z-20 bg-muted text-left px-4 py-3 font-bold text-foreground min-w-[180px] border-b border-r border-border/60">
+                                                                        Aprendiz
+                                                                    </th>
+                                                                    {displayedDays.map(d => {
+                                                                        const ds = toUTCDateStr(d);
+                                                                        const isToday = ds === toLocalDateStr(new Date());
+                                                                        const holidayName = getColombianHolidayName(ds);
+                                                                        const isHoliday = !!holidayName;
+                                                                        return (
+                                                                            <th key={ds} title={holidayName ? `Festivo: ${holidayName}` : undefined} className={`px-1.5 py-3 text-center font-bold border-b border-border/40 min-w-[44px] ${
+                                                                                isHoliday
+                                                                                    ? "bg-rose-500/15 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-x border-rose-300/50 dark:border-rose-800/50"
+                                                                                    : isToday
+                                                                                        ? "bg-primary/10 text-primary"
+                                                                                        : "text-muted-foreground"
+                                                                            }`}>
+                                                                                <div className="flex items-center justify-center gap-1">
+                                                                                    <span>{["Dom","Lun","Mar","Mié","Jue","Vie","Sáb"][d.getUTCDay()]}</span>
+                                                                                    {isHoliday && (
+                                                                                        <span className="w-1.5 h-1.5 rounded-full bg-rose-600 animate-pulse shrink-0" />
+                                                                                    )}
+                                                                                </div>
+                                                                                <div className={`text-[10px] font-mono mt-0.5 ${
+                                                                                    isHoliday
+                                                                                        ? "text-rose-700 dark:text-rose-300 font-extrabold"
+                                                                                        : isToday
+                                                                                            ? "text-primary font-bold"
+                                                                                            : "text-muted-foreground/70"
+                                                                                }`}>
+                                                                                    {String(d.getUTCDate()).padStart(2,"0")}/{String(d.getUTCMonth()+1).padStart(2,"0")}
+                                                                                </div>
+                                                                                {isHoliday && (
+                                                                                    <div className="text-[8px] font-black uppercase text-rose-600 dark:text-rose-400 leading-none mt-0.5 tracking-tighter">
+                                                                                        Festivo
+                                                                                    </div>
+                                                                                )}
+                                                                            </th>
+                                                                        );
+                                                                    })}
+                                                                    <th className="sm:sticky sm:right-0 z-20 bg-muted px-3 py-3 text-center font-bold text-muted-foreground border-b border-l border-border/60 min-w-[80px]">
+                                                                        F / T / R
+                                                                    </th>
+                                                                </tr>
+                                                            </thead>
+                                                            <tbody>
+                                                                {(selectedGroup.students || []).map((s: any, i: number) => {
+                                                                    const uLookup = lookup[s.id] || {};
+                                                                    const absences = Object.values(uLookup).filter(v => v.status === "ABSENT" && !v.justification).length;
+                                                                    const lates = Object.values(uLookup).filter(v => v.status === "LATE").length;
+                                                                    const leaves = Object.values(uLookup).filter(v => v.status === "LEAVE_EARLY").length;
+                                                                    return (
+                                                                        <tr key={s.id} className={`print-avoid-break group/row transition-colors ${i % 2 === 0 ? "bg-background" : "bg-muted/10"} hover:bg-primary/5`}>
+                                                                            <td className={`sm:sticky sm:left-0 z-10 px-4 py-2 font-semibold text-foreground border-r border-border/40 whitespace-nowrap transition-colors ${
+                                                                                i % 2 === 0 ? "bg-background" : "bg-neutral-50 dark:bg-zinc-900"
+                                                                            } group-hover/row:bg-muted`}>
+                                                                                <div className="flex items-center gap-2 flex-wrap">
+                                                                                    <span>{formatName(s.name, s.profile)}</span>
+                                                                                    <StudentNovedadBadge novedad={s.profile?.novedad} color={s.profile?.novedadColor} />
+                                                                                    <StudentVoceroBadge size="sm" role={s.id === selectedGroup?.voceroPrincipalId ? "PRINCIPAL" : s.id === selectedGroup?.voceroSuplenteId ? "SUPLENTE" : null} />
+                                                                                </div>
+                                                                            </td>
+                                                                            {displayedDays.map(d => {
+                                                                                const ds = toUTCDateStr(d);
+                                                                                const record = uLookup[ds];
+                                                                                const holidayName = getColombianHolidayName(ds);
+                                                                                const isHoliday = !!holidayName;
+                                                                                return (
+                                                                                    <td key={ds} className={`px-1.5 py-2 text-center border-border/20 border-b ${
+                                                                                        isHoliday ? "bg-rose-500/5 dark:bg-rose-950/20 border-x border-rose-200/40 dark:border-rose-900/40" : ""
+                                                                                    }`}>
+                                                                                        {(() => {
+                                                                                            if (isHoliday) {
+                                                                                                return (
+                                                                                                    <Tooltip delayDuration={200}>
+                                                                                                        <TooltipTrigger asChild>
+                                                                                                            <div className="inline-flex items-center justify-center cursor-help">
+                                                                                                                <span className="inline-flex items-center justify-center w-8 h-8 rounded-lg text-[9px] font-black bg-rose-100 text-rose-800 border border-rose-300 dark:bg-rose-950/70 dark:text-rose-200 dark:border-rose-800 shadow-2xs">
+                                                                                                                    FEST
+                                                                                                                </span>
+                                                                                                            </div>
+                                                                                                        </TooltipTrigger>
+                                                                                                        <TooltipContent side="top" className="p-2 font-semibold text-xs bg-popover text-popover-foreground border shadow-md rounded-lg max-w-[240px] break-words">
+                                                                                                            <div className="space-y-1">
+                                                                                                                <div className="font-bold border-b pb-0.5 mb-1 text-rose-600 dark:text-rose-400">
+                                                                                                                    Día Festivo Oficial
+                                                                                                                </div>
+                                                                                                                <p className="text-xs text-foreground font-medium">
+                                                                                                                    {holidayName}
+                                                                                                                </p>
+                                                                                                                <p className="text-[10px] text-muted-foreground italic">
+                                                                                                                    Día no hábil formativo (descontado de horas programadas).
+                                                                                                                </p>
+                                                                                                            </div>
+                                                                                                        </TooltipContent>
+                                                                                                    </Tooltip>
+                                                                                                );
+                                                                                            }
+
+                                                                                            const cellRecord = record || { status: "PRESENT" };
+                                                                                            return (
+                                                                                                <Tooltip delayDuration={200}>
+                                                                                                    <TooltipTrigger asChild>
+                                                                                                        <div className="inline-flex items-center justify-center cursor-help">
+                                                                                                            {statusCell(record)}
+                                                                                                        </div>
+                                                                                                    </TooltipTrigger>
+                                                                                                    <TooltipContent side="top" className="p-2 font-semibold text-xs bg-popover text-popover-foreground border shadow-md rounded-lg max-w-[240px] break-words">
+                                                                                                        <div className="space-y-1">
+                                                                                                            <div className="font-bold border-b pb-0.5 mb-1">
+                                                                                                                {cellRecord.status === "PRESENT" ? "Presente" :
+                                                                                                                 cellRecord.status === "ABSENT" ? "Inasistencia" :
+                                                                                                                 cellRecord.status === "LATE" ? "Llegada Tarde" :
+                                                                                                                 cellRecord.status === "LEAVE_EARLY" ? "Retiro Temprano" : "Sin Registro"}
+                                                                                                            </div>
+                                                                                                            {cellRecord.arrivalTime && (
+                                                                                                                <div><span className="opacity-70 font-medium">Ingreso:</span> {formatTime12h(cellRecord.arrivalTime)}</div>
+                                                                                                            )}
+                                                                                                            {cellRecord.departureTime && (
+                                                                                                                <div><span className="opacity-70 font-medium">Salida:</span> {formatTime12h(cellRecord.departureTime)}</div>
+                                                                                                            )}
+                                                                                                            {cellRecord.justification && (
+                                                                                                                <div className="mt-1 pt-1 border-t border-dashed"><span className="font-bold text-primary">Excusa:</span> {cellRecord.justification}</div>
+                                                                                                            )}
+                                                                                                        </div>
+                                                                                                    </TooltipContent>
+                                                                                                </Tooltip>
+                                                                                            );
+                                                                                        })()}
+                                                                                    </td>
+                                                                                );
+                                                                            })}
+                                                                            <td className={`sm:sticky sm:right-0 z-10 px-3 py-2 text-center border-l border-border/40 border-b transition-colors ${
+                                                                                i % 2 === 0 ? "bg-background" : "bg-neutral-50 dark:bg-zinc-900"
+                                                                            } group-hover/row:bg-muted`}>
+                                                                                <span className="font-black text-rose-700 dark:text-rose-400">{absences}</span>
+                                                                                <span className="text-muted-foreground mx-1">/</span>
+                                                                                <span className="font-black text-amber-700 dark:text-amber-400">{lates}</span>
+                                                                                <span className="text-muted-foreground mx-1">/</span>
+                                                                                <span className="font-black text-sky-700 dark:text-sky-400">{leaves}</span>
+                                                                            </td>
+                                                                        </tr>
+                                                                    );
+                                                                })}
+                                                            </tbody>
+                                                        </table>
+                                                    </div>
+                                                </TooltipProvider>
+                                            )}
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
+
+                            </TabsContent>
+
+                            {/* TAB: ASISTENCIA SEMANAL MULTIGRUPO POR HORARIO (LAZY LOADED ON OPEN) */}
+                            <TabsContent value="schedule-attendance" className="m-0 space-y-4 outline-none animate-in fade-in-50 duration-200">
+                                <GroupScheduleAttendanceView
+                                    selectedGroupId={selectedGroupId}
+                                    groups={groups}
+                                    onSelectGroup={(id) => handleGroupChangeAttempt(id)}
+                                    isActiveTab={activeTab === "schedule-attendance"}
+                                    teacherName={teacherName}
+                                />
+                            </TabsContent>
+
+                            {/* TAB 3: REMARKS & HISTORY */}
+                            <TabsContent value="remarks" className="m-0 space-y-8 outline-none animate-in fade-in-50 duration-200">
+                                {/* Omitted for brevity, kept exactly as before but optimized classes */}
+                                {/* Create Remark Section */}
+                                <div className="bg-primary/5 border border-primary/20 rounded-2xl sm:rounded-3xl p-4 sm:p-8 space-y-4 relative overflow-hidden">
+                                    <ShieldAlert className="absolute right-0 top-0 w-64 h-64 text-primary/5 -translate-y-1/4 translate-x-1/4 pointer-events-none" />
+                                    <div className="relative z-10">
+                                        <h3 className="text-xl sm:text-2xl font-black text-foreground mb-2">Registrar Observación Disciplinaria / Académica</h3>
+                                        <p className="text-xs text-muted-foreground mb-6">
+                                            Ten en cuenta que todas las observaciones registradas pueden ser visualizadas y modificadas por todos los instructores.
+                                        </p>
+                                        
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+                                            <div className="space-y-2">
+                                                <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Tipo de Observación</Label>
+                                                <Select value={remarkType} onValueChange={v => setRemarkType(v as any)}>
+                                                    <SelectTrigger className="h-12 rounded-xl bg-background border-primary/20">
+                                                        <SelectValue />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value="ATTENTION" className="text-red-600 font-bold">🔴 Llamado de Atención</SelectItem>
+                                                        <SelectItem value="COMMENDATION" className="text-emerald-600 font-bold">🟢 Felicitación</SelectItem>
+                                                        <SelectItem value="CITATION" className="text-blue-600 font-bold">🔵 Citación</SelectItem>
+                                                        <SelectItem value="OTHER" className="text-gray-600 font-bold">⚪ Otra Observación</SelectItem>
+                                                    </SelectContent>
+                                                </Select>
+                                            </div>
+                                            <div className="space-y-2">
+                                                <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Materia Asociada</Label>
+                                                <Select value={remarkCourseId} onValueChange={setRemarkCourseId}>
+                                                    <SelectTrigger className="h-12 rounded-xl bg-background border-primary/20">
+                                                        <SelectValue placeholder="Seleccionar Materia" />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        {selectedGroup.courses?.map((c: any) => (
+                                                            <SelectItem key={c.id} value={c.id} className="font-semibold">{c.title}</SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                            </div>
+                                        </div>
+
+                                        {/* Template Selector Row */}
+                                        <div className="space-y-2 mb-6">
+                                            <div className="flex items-center justify-between">
+                                                <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                                                    Plantilla Institucional (Gestoría Académica)
+                                                </Label>
+                                                {selectedTemplateId && (
+                                                    <Button
+                                                        type="button"
+                                                        variant="ghost"
+                                                        size="sm"
+                                                        onClick={() => {
+                                                            setSelectedTemplateId("");
+                                                            setTemplateCustomValues({});
+                                                        }}
+                                                        className="h-6 px-2 text-[11px] text-muted-foreground hover:text-foreground cursor-pointer"
+                                                    >
+                                                        Desvincular plantilla
+                                                    </Button>
+                                                )}
+                                            </div>
+                                            <Select 
+                                                value={selectedTemplateId || "custom"} 
+                                                onValueChange={(val) => {
+                                                    if (val === "custom") {
+                                                        setSelectedTemplateId("");
+                                                        setTemplateCustomValues({});
+                                                        return;
+                                                    }
+                                                    setSelectedTemplateId(val);
+                                                    const template = remarkTemplates.find(t => t.id === val);
+                                                    if (template) {
+                                                        setRemarkTitle(template.subject || template.title);
+                                                        setRemarkDesc(template.description);
+                                                        const initialVals: Record<string, string> = {};
+                                                        if (Array.isArray(template.customVariables)) {
+                                                            template.customVariables.forEach((cv: any) => {
+                                                                if (cv && cv.token) {
+                                                                    initialVals[cv.token] = cv.defaultValue || "";
+                                                                }
+                                                            });
+                                                        }
+                                                        setTemplateCustomValues(initialVals);
+                                                    }
+                                                }}
+                                            >
+                                                <SelectTrigger className="h-12 rounded-xl bg-background border-primary/20">
+                                                    <SelectValue placeholder="Seleccionar plantilla oficial o redactar personalizado..." />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="custom" className="text-muted-foreground italic font-medium">
+                                                        ✍️ Observación personalizada (sin plantilla)
+                                                    </SelectItem>
+                                                    {filteredTemplates.map((t) => (
+                                                        <SelectItem key={t.id} value={t.id} className="font-semibold">
+                                                            {t.title}
+                                                        </SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                            <p className="text-[11px] text-muted-foreground">
+                                                Puedes elegir una plantilla oficial establecida por la Gestoría Académica o redactar un mensaje personalizado libremente. Modificar el texto no alterará las plantillas guardadas en la base de datos.
+                                            </p>
+                                        </div>
+
+                                        {/* Custom Variables Section for the Selected Template */}
+                                        {templateCustomVariables.length > 0 && (
+                                            <div className="p-4 rounded-xl border border-primary/20 bg-primary/[0.04] space-y-3 mb-6 animate-in fade-in duration-200">
+                                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                                                    <div className="flex items-center gap-2">
+                                                        <SlidersHorizontal className="w-4 h-4 text-primary shrink-0" />
+                                                        <span className="text-xs font-bold uppercase tracking-wider text-primary">
+                                                            Variables Personalizadas de la Plantilla ({templateCustomVariables.length})
+                                                        </span>
+                                                    </div>
+                                                    <span className="text-[11px] text-muted-foreground">
+                                                        Valores por defecto editables para esta observación
+                                                    </span>
+                                                </div>
+                                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 pt-1">
+                                                    {templateCustomVariables.map((cv) => (
+                                                        <div key={cv.token} className="space-y-1.5 bg-background/80 p-2.5 rounded-lg border border-border/60">
+                                                            <Label className="text-xs font-semibold flex items-center justify-between gap-1 text-foreground">
+                                                                <span className="truncate">{cv.label}</span>
+                                                                <code className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary font-mono font-bold shrink-0">
+                                                                    {`{{${cv.token}}}`}
+                                                                </code>
+                                                            </Label>
+                                                            <Input
+                                                                value={templateCustomValues[cv.token] ?? cv.defaultValue ?? ""}
+                                                                onChange={(e) => {
+                                                                    const val = e.target.value;
+                                                                    setTemplateCustomValues(prev => ({
+                                                                        ...prev,
+                                                                        [cv.token]: val
+                                                                    }));
+                                                                }}
+                                                                placeholder={cv.defaultValue || `Valor para {{${cv.token}}}...`}
+                                                                className="h-8 text-xs rounded-md bg-background border-border/80"
+                                                            />
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+
+                                         <div className="space-y-2 mb-6">
+                                            <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Aprendiz a Notificar (Individual)</Label>
+                                            <DropdownMenu>
+                                                <DropdownMenuTrigger asChild>
+                                                    <Button 
+                                                        type="button" 
+                                                        variant="outline"
+                                                        className="flex h-12 w-full items-center justify-between rounded-xl border border-primary/20 bg-background px-3 py-2 text-sm text-foreground font-medium hover:bg-background hover:text-foreground cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary/25 focus:ring-offset-0 transition-colors"
+                                                    >
+                                                        <div className="flex items-center gap-2 truncate">
+                                                            <User className="w-4 h-4 text-primary shrink-0" />
+                                                            <span className="truncate">
+                                                                {selectedRemarkStudent 
+                                                                    ? formatName(selectedRemarkStudent.name, selectedRemarkStudent.profile)
+                                                                    : "Seleccionar un solo aprendiz..."}
+                                                            </span>
+                                                        </div>
+                                                        <ChevronDown className="w-4 h-4 opacity-50 shrink-0" />
+                                                    </Button>
+                                                </DropdownMenuTrigger>
+                                                <DropdownMenuContent className="w-[320px] max-h-[350px] overflow-y-auto p-2" align="start">
+                                                    <div className="p-1.5 border-b mb-2 flex gap-1">
+                                                        <Input 
+                                                            placeholder="Buscar aprendiz..." 
+                                                            className="h-9 rounded-lg bg-muted/30 border-0 focus-visible:ring-1 text-xs" 
+                                                            value={remarkStudentSearch}
+                                                            onChange={e => setRemarkStudentSearch(e.target.value)}
+                                                        />
+                                                        {remarkStudentSearch && (
+                                                            <Button variant="ghost" size="icon" className="h-9 w-9 shrink-0" onClick={() => setRemarkStudentSearch("")}>
+                                                                <X className="w-4 h-4" />
+                                                            </Button>
+                                                        )}
+                                                    </div>
+                                                    {selectedRemarkStudentId && (
+                                                        <div className="px-1 mb-2">
+                                                            <Button 
+                                                                variant="ghost" 
+                                                                type="button"
+                                                                className="text-[11px] h-7 w-full justify-center font-bold text-muted-foreground hover:bg-muted hover:text-destructive cursor-pointer"
+                                                                onClick={() => setSelectedRemarkStudentId(null)}
+                                                            >
+                                                                Quitar selección
+                                                            </Button>
+                                                        </div>
+                                                    )}
+                                                    <div className="space-y-1">
+                                                        {filteredStudentsForRemark.length === 0 ? (
+                                                            <p className="text-xs text-muted-foreground text-center py-4">No se encontraron aprendices</p>
+                                                        ) : (
+                                                            filteredStudentsForRemark.map((s: any) => {
+                                                                const isSelected = selectedRemarkStudentId === s.id;
+                                                                return (
+                                                                    <div 
+                                                                        key={s.id} 
+                                                                        onClick={(e) => {
+                                                                            e.preventDefault();
+                                                                            e.stopPropagation();
+                                                                            setSelectedRemarkStudentId(isSelected ? null : s.id);
+                                                                        }}
+                                                                        className={cn(
+                                                                            "flex items-center justify-between px-3 py-2.5 rounded-lg cursor-pointer transition-colors",
+                                                                            isSelected 
+                                                                                ? "bg-primary/15 text-primary font-bold" 
+                                                                                : "hover:bg-primary/5 text-foreground"
+                                                                        )}
+                                                                    >
+                                                                        <div className="text-left min-w-0 pr-2">
+                                                                            <p className="text-xs font-bold leading-tight truncate">
+                                                                                {formatName(s.name, s.profile)}
+                                                                            </p>
+                                                                            <div className="flex items-center gap-2 mt-0.5 text-[10px] text-muted-foreground">
+                                                                                <span>CC: {s.profile?.identificacion || "S/D"}</span>
+                                                                                {s.email && <span className="truncate max-w-[140px]">• {s.email}</span>}
+                                                                            </div>
+                                                                        </div>
+                                                                        {isSelected ? (
+                                                                            <Check className="w-4 h-4 text-primary shrink-0" />
+                                                                        ) : (
+                                                                            <div className="w-3.5 h-3.5 rounded-full border border-muted-foreground/30 shrink-0" />
+                                                                        )}
+                                                                    </div>
+                                                                );
+                                                            })
+                                                        )}
+                                                    </div>
+                                                </DropdownMenuContent>
+                                            </DropdownMenu>
+                                        </div>
+
+                                        {selectedRemarkStudent && (
+                                            <div className="flex items-center justify-between p-3.5 mb-6 bg-primary/10 rounded-xl border border-primary/20">
+                                                <div className="flex items-center gap-3 min-w-0">
+                                                    <Avatar className="h-9 w-9 border border-primary/30 shrink-0">
+                                                        <AvatarFallback className="text-xs font-bold bg-primary text-primary-foreground">
+                                                            {selectedRemarkStudent.name?.substring(0, 2).toUpperCase()}
+                                                        </AvatarFallback>
+                                                    </Avatar>
+                                                    <div className="min-w-0">
+                                                        <div className="flex items-center gap-2 flex-wrap">
+                                                            <span className="text-sm font-bold text-foreground">
+                                                                {formatName(selectedRemarkStudent.name, selectedRemarkStudent.profile)}
+                                                            </span>
+                                                            <Badge variant="outline" className="text-[10px] font-mono py-0 h-5 border-primary/30 text-primary">
+                                                                Doc: {selectedRemarkStudent.profile?.identificacion || "S/D"}
+                                                            </Badge>
+                                                        </div>
+                                                        <p className="text-xs text-muted-foreground truncate">
+                                                            {selectedRemarkStudent.email || "Sin correo registrado"}
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                                <Button 
+                                                    type="button" 
+                                                    variant="ghost" 
+                                                    size="sm" 
+                                                    onClick={() => setSelectedRemarkStudentId(null)}
+                                                    className="h-8 px-2.5 text-xs text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-lg cursor-pointer shrink-0"
+                                                >
+                                                    <X className="w-4 h-4 mr-1" /> Quitar
+                                                </Button>
+                                            </div>
+                                        )}
+                                        
+                                        <div className="space-y-2 mb-6">
+                                            <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Título / Asunto del Correo</Label>
+                                            <Input className="h-12 rounded-xl bg-background border-primary/20" value={remarkTitle} onChange={e => setRemarkTitle(e.target.value)} placeholder="Ej. Llamado de atención por inasistencia..." />
+                                        </div>
+                                        
+                                        <div className="space-y-2 mb-4">
+                                            <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Descripción Detallada</Label>
+                                            <Textarea className="min-h-[120px] rounded-xl bg-background border-primary/20 p-4" value={remarkDesc} onChange={e => setRemarkDesc(e.target.value)} placeholder="Describe el suceso o justificación de la observación..." />
+                                            {(remarkDesc.includes("{{") || (remarkDesc.includes("{") && remarkDesc.includes("}"))) && (
+                                                <div className="flex items-center gap-2 p-2.5 rounded-xl bg-primary/5 border border-primary/20 text-xs text-primary font-medium">
+                                                    <Sparkles className="w-4 h-4 shrink-0 text-primary" />
+                                                    <span>
+                                                        <strong>Variables dinámicas activas:</strong> Se personalizarán automáticamente con los datos de <strong>{selectedRemarkStudent ? formatName(selectedRemarkStudent.name, selectedRemarkStudent.profile) : "el aprendiz seleccionado"}</strong> al generar el correo o guardar.
+                                                    </span>
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        {/* Settings Row: Switches Grid */}
+                                        <div className="grid grid-cols-1 gap-4 mb-8 mt-6">
+                                            <div className="flex items-center gap-3 bg-background/50 p-4 rounded-xl border border-primary/10 transition-colors hover:bg-background/80">
+                                                <Switch 
+                                                    id="send-email-remark"
+                                                    checked={sendEmailOnSave}
+                                                    onCheckedChange={setSendEmailOnSave}
+                                                    className="shrink-0 cursor-pointer"
+                                                />
+                                                <Label htmlFor="send-email-remark" className="text-xs sm:text-sm font-bold text-foreground cursor-pointer select-none flex items-center gap-2">
+                                                    <Mail className="w-4 h-4 text-primary shrink-0" />
+                                                    <span>Enviar correo individual (abre cliente del sistema operativo al guardar)</span>
+                                                </Label>
+                                            </div>
+                                        </div>
+
+                                        {/* Action Buttons Row */}
+                                        <div className="flex flex-col lg:flex-row items-center justify-between gap-4 mt-8 bg-background/50 p-4 rounded-xl border border-primary/10">
+                                            <div className="text-sm font-semibold flex items-center justify-center lg:justify-start gap-2 w-full lg:w-auto">
+                                                <UserCheck className="w-5 h-5 text-primary shrink-0" />
+                                                <span>
+                                                    {selectedRemarkStudent ? (
+                                                        <>
+                                                            Destinatario individual: <strong className="text-primary">{formatName(selectedRemarkStudent.name, selectedRemarkStudent.profile)}</strong> {selectedRemarkStudent.email ? `(${selectedRemarkStudent.email})` : "(Sin correo)"}
+                                                        </>
+                                                    ) : (
+                                                        <span className="text-muted-foreground">Debes seleccionar un aprendiz para continuar</span>
+                                                    )}
+                                                </span>
+                                            </div>
+                                            <div className="flex flex-col sm:flex-row gap-3 w-full lg:w-auto">
+                                                <Button 
+                                                    type="button"
+                                                    variant="outline"
+                                                    onClick={handleCopyToClipboard}
+                                                    size="lg" 
+                                                    className="rounded-xl px-5 h-12 font-bold w-full sm:w-auto border-primary/20 text-primary hover:bg-primary/5 gap-2 flex items-center justify-center cursor-pointer"
+                                                >
+                                                    <FileText className="w-4 h-4" /> Copiar Mensaje
+                                                </Button>
+                                                
+                                                <Button 
+                                                    type="button"
+                                                    variant="outline"
+                                                    disabled={!selectedRemarkStudent}
+                                                    onClick={() => {
+                                                        if (!selectedRemarkStudent) {
+                                                            toast.warning("Selecciona un aprendiz para enviar el correo.");
+                                                            return;
+                                                        }
+                                                        if (!selectedRemarkStudent.email) {
+                                                            toast.warning("El aprendiz seleccionado no tiene correo electrónico registrado.");
+                                                            return;
+                                                        }
+                                                        const subject = encodeURIComponent(getParsedTitle(selectedRemarkStudent));
+                                                        const body = encodeURIComponent(getParsedDescription(selectedRemarkStudent));
+                                                        window.location.href = `mailto:${selectedRemarkStudent.email}?subject=${subject}&body=${body}`;
+                                                        notifyEmailSentBatchAction([selectedRemarkStudent.id], "REMARK");
+                                                    }}
+                                                    size="lg" 
+                                                    className="rounded-xl px-5 h-12 font-bold w-full sm:w-auto border-primary/20 text-primary hover:bg-primary/5 gap-2 flex items-center justify-center cursor-pointer"
+                                                >
+                                                    <Mail className="w-4 h-4" /> Enviar Correo
+                                                </Button>
+                                                
+                                                <Button 
+                                                    onClick={handleSaveRemarks} 
+                                                    disabled={isSavingRemark || !selectedRemarkStudent} 
+                                                    size="lg" 
+                                                    className="rounded-xl px-8 h-12 font-bold w-full sm:w-auto cursor-pointer"
+                                                >
+                                                    Registrar Observación
+                                                </Button>
+                                            </div>
+                                        </div>
+
+                                    </div>
+                                </div>
+                                {/* History Section */}
+                                <div className="mt-8 border-t pt-8">
+                                    <h3 className="font-bold text-2xl mb-6">Historial Reciente del Grupo</h3>
+                                    {/* Remarks history - Single column, full width */}
+                                    <div className="border border-border/50 rounded-xl sm:rounded-2xl bg-card p-4 sm:p-6 shadow-sm space-y-4 w-full">
+                                        <h4 className="font-bold text-lg flex items-center gap-2 border-b pb-4">
+                                            <MessageSquare className="w-5 h-5 text-primary" /> Últimas Observaciones
+                                        </h4>
+                                        <div className="space-y-4 max-h-[500px] overflow-y-auto pr-2">
+                                            {remarksByStudent.length === 0 ? (
+                                                <p className="text-sm text-muted-foreground text-center py-8">No hay observaciones registradas</p>
+                                            ) : (
+                                                remarksByStudent.map(({ student, remarks }) => (
+                                                    <div key={student.id} className="border border-border/40 rounded-xl sm:rounded-2xl bg-muted/5 p-3.5 sm:p-5 space-y-4 text-left">
+                                                        {/* Student Header */}
+                                                        <div className="flex items-center gap-3 pb-3 border-b border-border/40">
+                                                             <Avatar className="h-9 w-9 border bg-background shrink-0">
+                                                                 <AvatarImage src={student.image} />
+                                                                 <AvatarFallback>{student.name?.substring(0, 2).toUpperCase()}</AvatarFallback>
+                                                             </Avatar>
+                                                             <div className="min-w-0 text-left">
+                                                                 <p className="font-bold text-sm text-foreground truncate">{formatName(student.name, student.profile)}</p>
+                                                                 <p className="text-[10px] text-muted-foreground font-mono">ID: {student.profile?.identificacion || "S/D"}</p>
+                                                             </div>
+                                                             <Badge variant="outline" className="ml-auto text-[10px] font-black bg-primary/10 text-primary border-primary/20">
+                                                                 {remarks.length} {remarks.length === 1 ? "observación" : "observaciones"}
+                                                             </Badge>
+                                                        </div>
+                                                        
+                                                        {/* Remarks List for this student */}
+                                                        <div className="space-y-3.5 pl-3 border-l-2 border-primary/20">
+                                                            {remarks.map((rem: any) => (
+                                                                <div key={rem.id} className="group/remark text-sm p-4 rounded-xl border border-border/40 bg-background hover:bg-muted/30 transition-colors relative">
+                                                                    <div className="flex justify-between items-start mb-2.5 gap-2">
+                                                                        <div className="flex flex-wrap gap-1.5 items-center">
+                                                                            <Badge variant="outline" className={`text-[10px] py-0 px-1.5 font-bold ${
+                                                                                rem.type === 'ATTENTION' ? 'text-red-600 bg-red-50 border-red-200' :
+                                                                                rem.type === 'COMMENDATION' ? 'text-emerald-600 bg-emerald-50 border-emerald-200' :
+                                                                                rem.type === 'CITATION' ? 'text-blue-600 bg-blue-50 border-blue-200' :
+                                                                                'text-gray-600 bg-gray-50 border-gray-200'
+                                                                            }`}>
+                                                                                {rem.type === 'ATTENTION' ? 'Llamado Atención' :
+                                                                                 rem.type === 'COMMENDATION' ? 'Felicitación' :
+                                                                                 rem.type === 'CITATION' ? 'Citación' : 'Otra'}
+                                                                            </Badge>
+                                                                            {rem.viewedAt ? (
+                                                                                <Badge variant="outline" className="text-[9px] py-0 px-1 text-emerald-600 border-emerald-200 bg-emerald-50 gap-0.5" title={`Visto el ${format(new Date(rem.viewedAt), "dd/MM/yyyy HH:mm")}`}>
+                                                                                    <Eye className="w-2.5 h-2.5" /> Visto
+                                                                                </Badge>
+                                                                            ) : (
+                                                                                <Badge variant="outline" className="text-[9px] py-0 px-1 text-amber-600 border-amber-200 bg-amber-50 gap-0.5">
+                                                                                    <EyeOff className="w-2.5 h-2.5" /> No visto
+                                                                                </Badge>
+                                                                            )}
+                                                                        </div>
+                                                                        <div className="flex items-center gap-2 shrink-0">
+                                                                            <span className="text-[10px] font-semibold text-muted-foreground bg-muted/65 px-1.5 py-0.5 rounded">{formatCalendarDate(rem.date, "dd MMM yyyy")}</span>
+                                                                            <Button
+                                                                                variant="ghost"
+                                                                                size="icon"
+                                                                                className="w-7 h-7 rounded-md hover:bg-red-50 text-muted-foreground hover:text-red-600 transition-all opacity-100 sm:opacity-0 sm:group-hover/remark:opacity-100 cursor-pointer shrink-0"
+                                                                                onClick={() => handleDeleteRemark(rem.id)}
+                                                                                title="Retirar observación"
+                                                                            >
+                                                                                <Trash2 className="w-3.5 h-3.5" />
+                                                                            </Button>
+                                                                        </div>
+                                                                    </div>
+                                                                    <p className="font-bold text-xs text-foreground mt-1">{rem.title}</p>
+                                                                    <p className="text-[11px] text-muted-foreground mt-1 line-clamp-2">{rem.description}</p>
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                ))
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                            </TabsContent>
+
+                            {/* TAB: PLANES DE MEJORAMIENTO */}
+                            <TabsContent value="improvement" className="m-0 space-y-6 outline-none animate-in fade-in-50 duration-200">
+                                {/* Header Hero Banner */}
+                                <div className="bg-primary/5 border border-primary/20 rounded-2xl sm:rounded-3xl p-4 sm:p-6 lg:p-7 relative overflow-hidden shadow-2xs">
+                                    <FileText className="absolute right-0 top-0 w-64 h-64 text-primary/5 -translate-y-1/4 translate-x-1/4 pointer-events-none" />
+                                    <div className="relative z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                                        <div className="space-y-1">
+                                            <h3 className="text-xl sm:text-2xl font-black text-foreground tracking-tight">Planes de Mejoramiento</h3>
+                                            <p className="text-xs text-muted-foreground max-w-2xl">
+                                                Gestión, asignación y seguimiento de compromisos formativos de superación para aprendices de la ficha <span className="font-extrabold text-foreground">{selectedGroup.name}</span>.
+                                            </p>
+                                        </div>
+                                        <Button
+                                            onClick={() => setImpPlanFormDialog({
+                                                open: true,
+                                                studentId: selectedGroup?.students?.[0]?.id || "",
+                                                planNumber: "",
+                                                teacherDocUrl: "",
+                                                startDate: format(new Date(), "yyyy-MM-dd"),
+                                                endDate: format(new Date(), "yyyy-MM-dd"),
+                                                observations: "",
+                                                planScore: "",
+                                                finalGrade: "",
+                                                evidenceUrl: "",
+                                            })}
+                                            className="bg-primary text-primary-foreground hover:bg-primary/90 flex items-center gap-2 w-full sm:w-auto justify-center font-bold rounded-xl h-10 px-4 shadow-sm shrink-0 cursor-pointer"
+                                        >
+                                            <Plus className="w-4 h-4" />
+                                            Crear Plan de Mejoramiento
+                                        </Button>
+                                    </div>
+                                    <div className="mt-4 flex items-start gap-2.5 p-3 rounded-xl bg-background/60 dark:bg-card/60 border border-primary/20 text-xs text-foreground shadow-2xs">
+                                        <Info className="w-4 h-4 shrink-0 mt-0.5 text-primary" />
+                                        <p className="leading-relaxed">
+                                            <strong className="text-primary font-bold">Información Importante:</strong> Los planes de mejoramiento no afectan de forma automática la analítica de rendimiento académico del aprendiz en la plataforma. Es responsabilidad exclusiva del instructor pasar y registrar los resultados definitivos en el módulo de calificaciones de forma manual.
+                                        </p>
+                                    </div>
+                                </div>
+
+                                {/* Loading state */}
+                                {groupPlansLoading ? (
+                                    <div className="flex items-center justify-center py-16">
+                                        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+                                    </div>
+                                ) : groupPlans.length === 0 ? (
+                                    <div className="flex flex-col items-center justify-center p-16 border border-dashed rounded-2xl bg-muted/5 text-muted-foreground">
+                                        <FileText className="w-12 h-12 mb-4 opacity-40" />
+                                        <p className="font-semibold text-base">Sin Planes de Mejoramiento</p>
+                                        <p className="text-sm text-center mt-1">No se registran planes de mejoramiento en este grupo. Crea el primero con el botón superior.</p>
+                                    </div>
+                                ) : (() => {
+                                    // Group plans by student
+                                    const byStudent: Record<string, { student: any; plans: any[] }> = {};
+                                    for (const plan of groupPlans) {
+                                        const sid = plan.student?.id || plan.studentId;
+                                        if (!byStudent[sid]) byStudent[sid] = { student: plan.student, plans: [] };
+                                        byStudent[sid].plans.push(plan);
+                                    }
+                                    return (
+                                        <div className="space-y-6">
+                                            {Object.values(byStudent).map(({ student, plans: sPlans }) => (
+                                                <div key={student?.id} className="border border-border/60 rounded-2xl overflow-hidden">
+                                                    {/* Student header */}
+                                                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-muted/30 px-5 py-3 border-b border-border/60">
+                                                        <div className="flex items-center gap-3">
+                                                            <GraduationCap className="w-5 h-5 text-primary shrink-0" />
+                                                            <div>
+                                                                <p className="font-semibold text-sm">{formatName(student?.name, student?.profile)}</p>
+                                                                <p className="text-xs text-muted-foreground">{sPlans.length} plan{sPlans.length !== 1 ? "es" : ""} de mejoramiento</p>
+                                                            </div>
+                                                        </div>
+                                                        <div className="w-full sm:w-auto mt-1 sm:mt-0">
+                                                            <Button
+                                                                size="sm"
+                                                                variant="outline"
+                                                                className="text-xs h-8 gap-1 w-full sm:w-auto justify-center font-bold"
+                                                                onClick={() => setImpPlanFormDialog({
+                                                                    open: true,
+                                                                    studentId: student?.id || "",
+                                                                    planNumber: "",
+                                                                    teacherDocUrl: "",
+                                                                    startDate: format(new Date(), "yyyy-MM-dd"),
+                                                                    endDate: format(new Date(), "yyyy-MM-dd"),
+                                                                    observations: "",
+                                                                    planScore: "",
+                                                                    finalGrade: "",
+                                                                    evidenceUrl: "",
+                                                                })}
+                                                            >
+                                                                <FileText className="w-3.5 h-3.5" />
+                                                                Nuevo plan
+                                                            </Button>
+                                                        </div>
+                                                    </div>
+
+                                                    {/* Plans for student — Stepper Cards */}
+                                                    <div className="divide-y divide-border/40">
+                                                        {sPlans.map((plan: any) => {
+                                                            // ── Compute step completion ──
+                                                            const step1Done = !!plan.teacherDocUrl;
+                                                            const step2Done = !!plan.signedDocUrl;
+                                                            const step3Done = !!plan.teacherSignedDocUrl;
+                                                            const step4Done = !!plan.evidenceUrl;
+                                                            const step5Done = plan.planScore !== null || plan.finalGrade !== null;
+
+                                                            const { cleanObservations, history, resubmission } = getEffectivePlanHistory(plan);
+                                                            const isResubmissionRequested = !!resubmission?.requested;
+
+                                                            // ── Date progress bar ──
+                                                            const nowMs = Date.now();
+                                                            const startMs = new Date(plan.startDate).getTime();
+                                                            const endMs = new Date(plan.endDate).getTime();
+                                                            const datePct = Math.min(100, Math.max(0, Math.round(((nowMs - startMs) / (endMs - startMs)) * 100)));
+                                                            const daysTotal = Math.max(1, Math.round((endMs - startMs) / 86400000));
+                                                            const daysPassed = Math.max(0, Math.round((nowMs - startMs) / 86400000));
+
+                                                            const steps = [
+                                                                { 
+                                                                    label: "Plan creado", 
+                                                                    sub: "Instructor", 
+                                                                    done: step1Done, 
+                                                                    active: !step1Done, 
+                                                                    locked: false,
+                                                                    desc: "El instructor crea el plan de mejoramiento académico detallando compromisos, fechas y subiendo el documento inicial."
+                                                                },
+                                                                { 
+                                                                    label: "Est. firma", 
+                                                                    sub: "Aprendiz", 
+                                                                    done: step2Done, 
+                                                                    active: step1Done && !step2Done, 
+                                                                    locked: !step1Done,
+                                                                    desc: "El aprendiz debe descargar el documento inicial, firmarlo digitalmente y subir la copia firmada en aceptación."
+                                                                },
+                                                                { 
+                                                                    label: "Doc. firma", 
+                                                                    sub: "Instructor", 
+                                                                    done: step3Done, 
+                                                                    active: step2Done && !step3Done, 
+                                                                    locked: !step2Done,
+                                                                    desc: "El instructor revisa la firma del aprendiz, realiza la contrafirma del instructor y sube el documento final firmado."
+                                                                },
+                                                                { 
+                                                                    label: "Evidencias", 
+                                                                    sub: "Aprendiz", 
+                                                                    done: step4Done, 
+                                                                    active: step3Done && !step4Done, 
+                                                                    locked: !step3Done,
+                                                                    desc: isResubmissionRequested
+                                                                        ? "Reentrega de evidencias solicitada por el instructor. El aprendiz debe cargar la nueva versión corregida."
+                                                                        : "El aprendiz debe subir el enlace con los archivos o entregables que evidencien el cumplimiento de sus compromisos."
+                                                                },
+                                                                { 
+                                                                    label: "Evaluación", 
+                                                                    sub: "Instructor", 
+                                                                    done: step5Done, 
+                                                                    active: step4Done && !step5Done, 
+                                                                    locked: !step4Done,
+                                                                    desc: "El instructor califica el plan (0.0 a 5.0) evaluando el enlace de evidencias subido por el aprendiz."
+                                                                },
+                                                            ];
+
+                                                            return (
+                                                                <div key={plan.id} className="p-4 sm:p-5 space-y-4 hover:bg-muted/10 transition-all rounded-xl border border-transparent hover:border-border/50">
+                                                                    {/* Plan title + actions row */}
+                                                                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-border/30 pb-3">
+                                                                        <div className="space-y-0.5">
+                                                                            <div className="flex items-center gap-2 flex-wrap">
+                                                                                <span className="font-extrabold text-sm text-foreground">Plan N° {plan.planNumber}</span>
+                                                                                {step5Done ? (
+                                                                                    <Badge variant="outline" className={`text-[9px] font-bold py-0.5 border-none ${
+                                                                                        plan.finalGrade === 0
+                                                                                            ? "bg-red-500/10 text-red-600"
+                                                                                            : "bg-emerald-500/10 text-emerald-600"
+                                                                                    }`}>
+                                                                                        {plan.finalGrade === 0 ? "0.0" : `Calificado: ${plan.finalGrade?.toFixed(1)}`}
+                                                                                    </Badge>
+                                                                                ) : isResubmissionRequested ? (
+                                                                                    <Badge variant="outline" className="text-[9px] font-bold py-0.5 bg-amber-500/10 text-amber-600 border-amber-300">
+                                                                                        Reentrega
+                                                                                    </Badge>
+                                                                                ) : !plan.viewedAt ? (
+                                                                                    <Badge variant="outline" className="text-[9px] font-bold bg-amber-500/10 text-amber-600 border-none">Nuevo</Badge>
+                                                                                ) : (
+                                                                                    <Badge variant="outline" className="text-[9px] font-bold bg-emerald-500/10 text-emerald-600 border-none">Visto</Badge>
+                                                                                )}
+                                                                            </div>
+                                                                            <div className="text-[11px] text-muted-foreground mt-0.5">
+                                                                                {formatCalendarDate(plan.startDate, "dd/MM/yyyy")} → {formatCalendarDate(plan.endDate, "dd/MM/yyyy")}
+                                                                            </div>
+                                                                        </div>
+                                                                        <div className="flex flex-wrap items-center gap-1.5 w-full sm:w-auto justify-start sm:justify-end">
+                                                                            <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-muted-foreground hover:text-primary" title="Enviar correo" onClick={() => handleImpEmail(plan)}><Mail className="w-3.5 h-3.5" /></Button>
+                                                                            <Button size="sm" variant="ghost" className="h-7 px-2 text-xs gap-1 border border-border/50 bg-background sm:border-none" onClick={() => setViewGroupPlanDetail(plan)}><Eye className="w-3 h-3" />Ver</Button>
+                                                                            <Button size="sm" variant="ghost" className="h-7 px-2 text-xs gap-1 border border-border/50 bg-background sm:border-none text-amber-600 hover:text-amber-700" onClick={() => setResetPlanDialog({ open: true, planId: plan.id, stepNumber: 1, reason: "" })}><RotateCcw className="w-3.5 h-3.5" />Devolver Paso</Button>
+                                                                            <Button size="sm" variant="ghost" className="h-7 px-2 text-xs gap-1 border border-border/50 bg-background sm:border-none" onClick={() => setImpPlanFormDialog({ open: true, id: plan.id, studentId: plan.studentId, planNumber: plan.planNumber, teacherDocUrl: plan.teacherDocUrl || "", startDate: formatCalendarDate(plan.startDate, "yyyy-MM-dd"), endDate: formatCalendarDate(plan.endDate, "yyyy-MM-dd"), observations: getCleanObservations(plan.observations), planScore: plan.planScore !== null && plan.planScore !== undefined ? plan.planScore : "", finalGrade: plan.finalGrade !== null && plan.finalGrade !== undefined ? plan.finalGrade : "", evidenceUrl: plan.evidenceUrl || "" })}><FileText className="w-3 h-3" />Editar</Button>
+                                                                            <Button size="sm" variant="ghost" className="h-7 px-2 text-xs gap-1 text-destructive hover:text-destructive border border-destructive/20 bg-background sm:border-none" onClick={() => setImpDeleteConfirm(plan.id)}><Trash2 className="w-3 h-3" />Eliminar</Button>
+                                                                        </div>
+                                                                    </div>
+
+                                                                    {/* ── Temporal progress bar ── */}
+                                                                    <div className="space-y-1">
+                                                                        <div className="flex items-center justify-between text-[10px] text-muted-foreground font-medium">
+                                                                            <span>Progreso temporal del plan</span>
+                                                                            <span className={datePct >= 100 ? "text-red-500 font-bold" : "text-primary font-semibold"}>
+                                                                                {datePct}% · {Math.min(daysPassed, daysTotal)}/{daysTotal} días
+                                                                            </span>
+                                                                        </div>
+                                                                        <div className="h-2 w-full bg-slate-100/90 dark:bg-muted/60 border border-slate-200/50 dark:border-transparent rounded-full overflow-hidden">
+                                                                            <div
+                                                                                className={`h-full rounded-full transition-all duration-500 ${datePct >= 100 ? "bg-red-500" : datePct >= 75 ? "bg-amber-500" : "bg-primary"}`}
+                                                                                style={{ width: `${datePct}%` }}
+                                                                            />
+                                                                        </div>
+                                                                    </div>
+
+                                                                    {/* ── 5-Step Stepper ── */}
+                                                                    <TooltipProvider>
+                                                                        <div className="relative grid grid-cols-5 gap-2">
+                                                                            <div className="absolute top-4 left-[10%] right-[10%] h-0.5 bg-border z-0" />
+                                                                            {steps.map((step, idx) => (
+                                                                                <Tooltip key={idx}>
+                                                                                    <TooltipTrigger asChild>
+                                                                                        <div className="flex flex-col items-center gap-1.5 relative z-10 cursor-help">
+                                                                                            <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-black border-2 transition-all ${
+                                                                                                step.done
+                                                                                                    ? "bg-emerald-500 border-emerald-500 text-white"
+                                                                                                    : step.locked
+                                                                                                        ? "bg-muted border-border text-muted-foreground"
+                                                                                                        : step.active
+                                                                                                            ? "bg-primary border-primary text-primary-foreground ring-2 ring-primary/30"
+                                                                                                            : "bg-background border-muted text-muted-foreground"
+                                                                                            }`}>
+                                                                                                {step.done ? (
+                                                                                                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                                                                                                ) : step.locked ? (
+                                                                                                    <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" /></svg>
+                                                                                                ) : (
+                                                                                                    <span>{idx + 1}</span>
+                                                                                                )}
+                                                                                            </div>
+                                                                                            <div className="text-center">
+                                                                                                <p className={`text-[10px] font-semibold leading-tight ${step.done ? "text-emerald-600" : step.active ? "text-primary" : "text-muted-foreground"}`}>{step.label}</p>
+                                                                                                <p className="text-[9px] text-muted-foreground hidden sm:block">{step.sub}</p>
+                                                                                            </div>
+                                                                                        </div>
+                                                                                    </TooltipTrigger>
+                                                                                    <TooltipContent className="max-w-[200px] p-3 text-xs rounded-xl shadow-lg bg-popover text-popover-foreground border border-border">
+                                                                                        <div className="space-y-1 text-left">
+                                                                                            <p className="font-bold text-primary">{step.label} ({step.sub})</p>
+                                                                                            <p className="text-muted-foreground leading-snug">{step.desc}</p>
+                                                                                        </div>
+                                                                                    </TooltipContent>
+                                                                                </Tooltip>
+                                                                            ))}
+                                                                        </div>
+                                                                    </TooltipProvider>
+
+                                                                    {/* ── Step 3 action: Teacher countersign prompt ── */}
+                                                                    {step2Done && !step3Done && (
+                                                                        <div className="flex items-center gap-2 p-3 bg-blue-50/50 dark:bg-blue-950/10 border border-blue-200 dark:border-blue-800 rounded-xl">
+                                                                            <FileText className="w-4 h-4 text-blue-600 shrink-0" />
+                                                                            <p className="text-xs text-blue-700 dark:text-blue-400 flex-1">El aprendiz ya firmó el plan. Ahora debes subir tu copia firmada.</p>
+                                                                            <Button size="sm" className="h-7 text-xs bg-blue-600 hover:bg-blue-700 text-white gap-1 shrink-0" onClick={() => setImpTeacherSignDialog({ planId: plan.id, url: "" })}>
+                                                                                <FileText className="w-3 h-3" />Subir mi firma
+                                                                            </Button>
+                                                                        </div>
+                                                                    )}
+                                                                    {step3Done && (
+                                                                        <div className="flex items-center gap-2 p-2.5 bg-emerald-50/50 dark:bg-emerald-950/10 border border-emerald-200 rounded-xl">
+                                                                            <a href={plan.teacherSignedDocUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-emerald-700 hover:underline font-semibold flex-1 truncate">
+                                                                                ✓ Tu firma cargada — ver documento
+                                                                            </a>
+                                                                            <Button size="sm" variant="ghost" className="h-6 w-6 p-0 text-red-500 hover:text-red-700 shrink-0" title="Eliminar mi firma" onClick={() => handleImpDeleteTeacherSignedDoc(plan.id)}><Trash2 className="w-3 h-3" /></Button>
+                                                                        </div>
+                                                                    )}
+
+                                                                    {/* ── Student signed doc link ── */}
+                                                                    {step2Done && plan.signedDocUrl && (
+                                                                        <div className="flex items-center gap-2 p-2.5 bg-muted/30 border border-border/60 rounded-xl">
+                                                                            <a href={plan.signedDocUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-primary hover:underline font-semibold flex-1 truncate">
+                                                                                Firma aprendiz — ver documento
+                                                                            </a>
+                                                                            <Button size="sm" variant="ghost" className="h-6 w-6 p-0 text-amber-600 hover:text-amber-700 shrink-0" title="Eliminar firma del aprendiz" onClick={() => handleImpDeleteSignedDoc(plan.id)}><Trash2 className="w-3 h-3" /></Button>
+                                                                        </div>
+                                                                    )}
+
+                                                                    {/* ── Resubmission notice banner ── */}
+                                                                    {isResubmissionRequested && (
+                                                                        <div className="p-3 bg-amber-50/70 dark:bg-amber-950/20 border border-amber-300 rounded-xl space-y-1 text-left">
+                                                                            <div className="flex items-center gap-1.5 text-xs font-bold text-amber-800 dark:text-amber-300">
+                                                                                <RotateCcw className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                                                                                <span>Reentrega de Evidencia Solicitada</span>
+                                                                                <span className="text-[11px] font-normal text-amber-700/80 dark:text-amber-400">
+                                                                                    · Plazo extendido al <strong>{formatCalendarDate(plan.endDate, "dd/MM/yyyy")}</strong>
+                                                                                </span>
+                                                                            </div>
+                                                                            <p className="text-xs text-amber-900 dark:text-amber-200 italic pl-1 leading-relaxed">
+                                                                                &ldquo;{resubmission.feedback}&rdquo;
+                                                                            </p>
+                                                                        </div>
+                                                                    )}
+
+                                                                    {/* ── Student evidence link ── */}
+                                                                    {plan.evidenceUrl && (
+                                                                        <div className="flex items-center gap-2 p-2.5 bg-sky-50/50 dark:bg-sky-950/10 border border-sky-200 rounded-xl">
+                                                                            <FileText className="w-4 h-4 text-sky-600 shrink-0" />
+                                                                            <a href={plan.evidenceUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-sky-700 hover:underline font-semibold flex-1 truncate">
+                                                                                {isResubmissionRequested ? "Evidencia anterior enviada por aprendiz — ver enlace" : "Evidencias cargadas por aprendiz — ver enlace"}
+                                                                            </a>
+                                                                        </div>
+                                                                    )}
+
+                                                                    {/* ── Evidence submission history ── */}
+                                                                    <PlanEvidenceHistoryList history={history} resubmission={resubmission} />
+
+                                                                    {/* Paso 5 — Calificación y Evaluación */}
+                                                                    <div className={`mt-4 p-4 rounded-xl border text-left ${
+                                                                        plan.finalGrade !== null
+                                                                            ? "bg-emerald-50/50 dark:bg-emerald-950/10 border-emerald-200"
+                                                                            : step4Done
+                                                                                ? isResubmissionRequested
+                                                                                    ? "bg-amber-50/50 dark:bg-amber-950/10 border-amber-200"
+                                                                                    : "bg-emerald-50/30 dark:bg-emerald-950/10 border-emerald-200/80"
+                                                                                : new Date() > new Date(plan.endDate)
+                                                                                    ? "bg-amber-50/50 dark:bg-amber-950/10 border-amber-200"
+                                                                                    : "bg-muted/50 border-muted"
+                                                                    }`}>
+                                                                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                                                                            <div className="space-y-1">
+                                                                                <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">Paso 5 — Calificación Final (0-5.0)</span>
+                                                                                {plan.finalGrade !== null ? (
+                                                                                    <p className="text-sm font-semibold text-emerald-800 dark:text-emerald-400">
+                                                                                        Plan Evaluado y Finalizado. Nota: <span className="text-lg font-black">{plan.finalGrade.toFixed(1)} / 5.0</span>
+                                                                                    </p>
+                                                                                ) : step4Done ? (
+                                                                                    isResubmissionRequested ? (
+                                                                                        <p className="text-xs text-amber-700 dark:text-amber-400 font-medium">
+                                                                                            Reentrega en proceso. Esperando que el aprendiz cargue la nueva evidencia antes del {formatCalendarDate(plan.endDate, "dd/MM/yyyy")}. Puedes calificar de forma anticipada si lo requieres.
+                                                                                        </p>
+                                                                                    ) : (
+                                                                                        <p className="text-xs text-foreground font-medium">
+                                                                                            Evidencias recibidas. Puedes evaluar y dar por finalizado el plan de mejoramiento o solicitar una reentrega si la evidencia requiere ajustes.
+                                                                                        </p>
+                                                                                    )
+                                                                                ) : new Date() > new Date(plan.endDate) ? (
+                                                                                    <p className="text-xs text-amber-700 dark:text-amber-400 font-medium">
+                                                                                        Fecha límite finalizada sin evidencias cargadas. Esperando asignación de calificación.
+                                                                                    </p>
+                                                                                ) : (
+                                                                                    <p className="text-xs text-muted-foreground italic">
+                                                                                        El aprendiz debe cargar el enlace de evidencias en el Paso 4 antes de proceder con la calificación.
+                                                                                    </p>
+                                                                                )}
+                                                                            </div>
+                                                                            
+                                                                            {/* Action buttons for teacher */}
+                                                                            <div className="shrink-0 flex items-center gap-2 flex-wrap">
+                                                                                {plan.finalGrade !== null ? (
+                                                                                    <Button 
+                                                                                        size="sm" 
+                                                                                        variant="outline"
+                                                                                        onClick={() => setGradePlanDialog({ open: true, planId: plan.id, grade: String(plan.finalGrade) })}
+                                                                                        className="h-8 text-xs font-bold border-emerald-300 text-emerald-800 hover:bg-emerald-100/50 cursor-pointer"
+                                                                                    >
+                                                                                        Cambiar Nota
+                                                                                    </Button>
+                                                                                ) : step4Done ? (
+                                                                                    <>
+                                                                                        <Button 
+                                                                                            size="sm"
+                                                                                            onClick={() => setGradePlanDialog({ open: true, planId: plan.id, grade: "" })}
+                                                                                            className="h-8 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer gap-1"
+                                                                                        >
+                                                                                            <CheckSquare className="w-3.5 h-3.5" />
+                                                                                            Calificar y Finalizar
+                                                                                        </Button>
+                                                                                        <Button 
+                                                                                            size="sm"
+                                                                                            variant="outline"
+                                                                                            onClick={() => setResubmitPlanModal({
+                                                                                                open: true,
+                                                                                                planId: plan.id,
+                                                                                                planNumber: plan.planNumber,
+                                                                                                studentName: formatName(student?.name, student?.profile),
+                                                                                                currentEndDate: plan.endDate,
+                                                                                                currentEvidenceUrl: plan.evidenceUrl,
+                                                                                            })}
+                                                                                            className="h-8 text-xs font-bold border-amber-400 text-amber-700 hover:bg-amber-50 dark:hover:bg-amber-950/30 cursor-pointer gap-1"
+                                                                                        >
+                                                                                            <RotateCcw className="w-3.5 h-3.5 text-amber-600" />
+                                                                                            {isResubmissionRequested ? "Modificar Reentrega" : "Solicitar Reentrega"}
+                                                                                        </Button>
+                                                                                    </>
+                                                                                ) : new Date() > new Date(plan.endDate) ? (
+                                                                                    <Button 
+                                                                                        size="sm"
+                                                                                        onClick={() => setGradePlanDialog({ open: true, planId: plan.id, grade: "" })}
+                                                                                        className="h-8 text-xs font-bold bg-amber-600 hover:bg-amber-700 text-white cursor-pointer"
+                                                                                    >
+                                                                                        Calificar Plan
+                                                                                    </Button>
+                                                                                ) : null}
+                                                                            </div>
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    );
+                                })()}
+
+
+                                {/* ── Create / Edit Plan Modal ── */}
+                                <Dialog open={!!impPlanFormDialog?.open} onOpenChange={(o) => { if (!o) setImpPlanFormDialog(null); }}>
+                                    <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+                                        <DialogHeader>
+                                            <DialogTitle>{impPlanFormDialog?.id ? "Editar" : "Crear"} Plan de Mejoramiento</DialogTitle>
+                                            <DialogDescription>Gestiona el plan de mejoramiento académico para el aprendiz seleccionado.</DialogDescription>
+                                        </DialogHeader>
+                                        {impPlanFormDialog && (
+                                            <form onSubmit={handleImpUpsert} className="space-y-4 pt-2">
+                                                {/* Student selector — only show when creating */}
+                                                {!impPlanFormDialog.id && (
+                                                    <div className="space-y-1">
+                                                        <Label htmlFor="imp-student">Aprendiz *</Label>
+                                                        <Select
+                                                            value={impPlanFormDialog.studentId}
+                                                            onValueChange={(v) => setImpPlanFormDialog(prev => prev ? { ...prev, studentId: v } : prev)}
+                                                        >
+                                                            <SelectTrigger id="imp-student" className="w-full h-10">
+                                                                <SelectValue placeholder="Seleccione un aprendiz..." />
+                                                            </SelectTrigger>
+                                                            <SelectContent>
+                                                                {(selectedGroup?.students || []).map((s: any) => (
+                                                                    <SelectItem key={s.id} value={s.id}>
+                                                                        {formatName(s.name, s.profile)}
+                                                                    </SelectItem>
+                                                                ))}
+                                                            </SelectContent>
+                                                        </Select>
+                                                    </div>
+                                                )}
+                                                <div className="grid grid-cols-2 gap-4">
+                                                    <div className="space-y-1">
+                                                        <Label htmlFor="imp-planNumber">Número de Plan *</Label>
+                                                        <Input id="imp-planNumber" placeholder="Ej: 2026-001" value={impPlanFormDialog.planNumber} onChange={(e) => setImpPlanFormDialog(prev => prev ? { ...prev, planNumber: e.target.value } : prev)} required />
+                                                    </div>
+                                                    <div className="space-y-1">
+                                                        <Label htmlFor="imp-teacherDocUrl">Enlace Documento del Plan</Label>
+                                                        <Input id="imp-teacherDocUrl" placeholder="https://..." value={impPlanFormDialog.teacherDocUrl} onChange={(e) => setImpPlanFormDialog(prev => prev ? { ...prev, teacherDocUrl: e.target.value } : prev)} />
+                                                    </div>
+                                                </div>
+                                                <div className="grid grid-cols-2 gap-4">
+                                                    <div className="space-y-1">
+                                                        <Label htmlFor="imp-startDate">Fecha de Inicio *</Label>
+                                                        <Input id="imp-startDate" type="date" value={impPlanFormDialog.startDate} onChange={(e) => setImpPlanFormDialog(prev => prev ? { ...prev, startDate: e.target.value } : prev)} required />
+                                                    </div>
+                                                    <div className="space-y-1">
+                                                        <Label htmlFor="imp-endDate">Fecha de Finalización *</Label>
+                                                        <Input id="imp-endDate" type="date" value={impPlanFormDialog.endDate} onChange={(e) => setImpPlanFormDialog(prev => prev ? { ...prev, endDate: e.target.value } : prev)} required />
+                                                    </div>
+                                                </div>
+                                                <div className="space-y-1">
+                                                    <Label htmlFor="imp-observations">Observaciones / Criterios de Evaluación</Label>
+                                                    <Textarea id="imp-observations" placeholder="Descripción detallada del plan, actividades y criterios..." rows={4} value={impPlanFormDialog.observations} onChange={(e) => setImpPlanFormDialog(prev => prev ? { ...prev, observations: e.target.value } : prev)} />
+                                                </div>
+
+                                                <DialogFooter className="pt-2">
+                                                    <Button type="button" variant="outline" onClick={() => setImpPlanFormDialog(null)}>Cancelar</Button>
+                                                    <Button type="submit">{impPlanFormDialog.id ? "Guardar Cambios" : "Crear Plan"}</Button>
+                                                </DialogFooter>
+                                            </form>
+                                        )}
+                                    </DialogContent>
+                                </Dialog>
+
+                                {/* ── View Plan Detail Modal ── */}
+                                <Dialog open={!!viewGroupPlanDetail} onOpenChange={(o) => { if (!o) setViewGroupPlanDetail(null); }}>
+                                    <DialogContent className="max-w-5xl sm:max-w-5xl max-h-[85vh] overflow-y-auto rounded-2xl">
+                                        <DialogHeader>
+                                            <DialogTitle className="flex items-center gap-2 font-bold text-lg">
+                                                <FileText className="w-5 h-5 text-primary" />
+                                                Detalle de Plan de Mejoramiento N° {viewGroupPlanDetail?.planNumber}
+                                            </DialogTitle>
+                                        </DialogHeader>
+                                        {viewGroupPlanDetail && (() => {
+                                            const step1Done = !!viewGroupPlanDetail.teacherDocUrl;
+                                            const step2Done = !!viewGroupPlanDetail.signedDocUrl;
+                                            const step3Done = !!viewGroupPlanDetail.teacherSignedDocUrl;
+                                            const step4Done = !!viewGroupPlanDetail.evidenceUrl;
+                                            const step5Done = viewGroupPlanDetail.finalGrade !== null;
+
+                                            const viewPlanHistory = getEffectivePlanHistory(viewGroupPlanDetail);
+
+                                            return (
+                                                <div className="space-y-5 text-sm text-left">
+                                                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 border-b pb-4">
+                                                        <div className="space-y-0.5">
+                                                            <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Aprendiz</p>
+                                                            <p className="font-semibold text-foreground">{formatName(viewGroupPlanDetail.student?.name, viewGroupPlanDetail.student?.profile)}</p>
+                                                        </div>
+                                                        <div className="space-y-0.5">
+                                                            <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Instructor</p>
+                                                            <p className="font-semibold text-primary">{formatName(viewGroupPlanDetail.teacher?.name, viewGroupPlanDetail.teacher?.profile)}</p>
+                                                        </div>
+                                                        <div className="space-y-0.5">
+                                                            <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Fecha Inicio</p>
+                                                            <p className="font-medium text-foreground">{formatCalendarDate(viewGroupPlanDetail.startDate, "dd/MM/yyyy")}</p>
+                                                        </div>
+                                                        <div className="space-y-0.5">
+                                                            <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Fecha Fin</p>
+                                                            <p className="font-medium text-foreground">{formatCalendarDate(viewGroupPlanDetail.endDate, "dd/MM/yyyy")}</p>
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="flex items-center gap-2">
+                                                        {viewGroupPlanDetail.viewedAt ? (
+                                                            <Badge variant="outline" className="text-xs bg-emerald-500/10 text-emerald-600 border-none font-bold"><Eye className="w-3.5 h-3.5 mr-1" />Revisado por el aprendiz</Badge>
+                                                        ) : (
+                                                            <Badge variant="outline" className="text-xs bg-amber-500/10 text-amber-600 border-none font-bold"><EyeOff className="w-3.5 h-3.5 mr-1" />No revisado aún</Badge>
+                                                        )}
+                                                    </div>
+
+                                                    {viewPlanHistory.cleanObservations && (
+                                                        <div className="space-y-1">
+                                                            <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Observaciones</p>
+                                                            <p className="text-xs whitespace-pre-line bg-muted/40 rounded-xl p-3.5 border border-muted/70 leading-relaxed text-foreground">{viewPlanHistory.cleanObservations}</p>
+                                                        </div>
+                                                    )}
+
+                                                    {viewPlanHistory.history.length > 0 && (
+                                                        <div className="space-y-1.5">
+                                                            <PlanEvidenceHistoryList history={viewPlanHistory.history} resubmission={viewPlanHistory.resubmission} defaultExpanded={true} />
+                                                        </div>
+                                                    )}
+
+                                                    {/* Vertical Stepper Timeline */}
+                                                    <div className="space-y-4 border-t pt-4">
+                                                        <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest mb-3">Flujo de Cumplimiento (Pasos 1-5)</p>
+                                                        <div className="relative pl-8 space-y-6 before:absolute before:left-[11px] before:top-2 before:bottom-2 before:w-[2px] before:bg-border">
+                                                            {/* Paso 1 */}
+                                                            <div className="relative">
+                                                                <div className="absolute -left-[30px] top-0 w-6 h-0.5 mt-3 bg-border" />
+                                                                <div className={`absolute -left-[41px] top-0 w-6 h-6 rounded-full border-2 flex items-center justify-center text-[10px] font-black z-10 transition-all ${
+                                                                    step1Done ? "bg-emerald-500 border-emerald-500 text-white" : "bg-primary border-primary text-primary-foreground"
+                                                                }`}>
+                                                                    {step1Done ? "✓" : "1"}
+                                                                </div>
+                                                                <div className="space-y-1">
+                                                                    <h4 className="text-xs font-bold text-foreground">Paso 1: Plan del Instructor <span className="text-[10px] font-normal text-muted-foreground">(Instructor)</span></h4>
+                                                                    <p className="text-[11px] text-muted-foreground leading-snug">El instructor crea el plan de mejoramiento académico detallando compromisos, fechas y cargando el documento inicial.</p>
+                                                                    {viewGroupPlanDetail.teacherDocUrl ? (
+                                                                        <a href={viewGroupPlanDetail.teacherDocUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs text-primary hover:underline font-bold mt-1">
+                                                                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                                                                            Descargar Plan Base
+                                                                        </a>
+                                                                    ) : (
+                                                                        <span className="text-xs text-muted-foreground italic block mt-1">No cargado</span>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+
+                                                            {/* Paso 2 */}
+                                                            <div className="relative">
+                                                                <div className="absolute -left-[30px] top-0 w-6 h-0.5 mt-3 bg-border" />
+                                                                <div className={`absolute -left-[41px] top-0 w-6 h-6 rounded-full border-2 flex items-center justify-center text-[10px] font-black z-10 transition-all ${
+                                                                    step2Done ? "bg-emerald-500 border-emerald-500 text-white" : step1Done ? "bg-primary border-primary text-primary-foreground" : "bg-muted border-border text-muted-foreground"
+                                                                }`}>
+                                                                    {step2Done ? "✓" : "2"}
+                                                                </div>
+                                                                <div className="space-y-1">
+                                                                    <h4 className="text-xs font-bold text-foreground">Paso 2: Firma del Aprendiz <span className="text-[10px] font-normal text-muted-foreground">(Aprendiz)</span></h4>
+                                                                    <p className="text-[11px] text-muted-foreground leading-snug">El aprendiz debe descargar el documento inicial, firmarlo digitalmente y subir la copia firmada en aceptación.</p>
+                                                                    {viewGroupPlanDetail.signedDocUrl ? (
+                                                                        <a href={viewGroupPlanDetail.signedDocUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs text-emerald-600 hover:underline font-bold mt-1">
+                                                                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                                                                            Ver Documento Firmado
+                                                                        </a>
+                                                                    ) : (
+                                                                        <span className="text-xs text-muted-foreground italic block mt-1">Pendiente de firma</span>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+
+                                                            {/* Paso 3 */}
+                                                            <div className="relative">
+                                                                <div className="absolute -left-[30px] top-0 w-6 h-0.5 mt-3 bg-border" />
+                                                                <div className={`absolute -left-[41px] top-0 w-6 h-6 rounded-full border-2 flex items-center justify-center text-[10px] font-black z-10 transition-all ${
+                                                                    step3Done ? "bg-emerald-500 border-emerald-500 text-white" : step2Done ? "bg-primary border-primary text-primary-foreground" : "bg-muted border-border text-muted-foreground"
+                                                                }`}>
+                                                                    {step3Done ? "✓" : "3"}
+                                                                </div>
+                                                                <div className="space-y-1">
+                                                                    <h4 className="text-xs font-bold text-foreground">Paso 3: Firma del Instructor <span className="text-[10px] font-normal text-muted-foreground">(Instructor)</span></h4>
+                                                                    <p className="text-[11px] text-muted-foreground leading-snug">El instructor revisa la firma del aprendiz, realiza la contrafirma del instructor y sube el documento final firmado.</p>
+                                                                    {viewGroupPlanDetail.teacherSignedDocUrl ? (
+                                                                        <a href={viewGroupPlanDetail.teacherSignedDocUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs text-blue-600 hover:underline font-bold mt-1">
+                                                                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                                                                            Ver Documento Contrafirmado
+                                                                        </a>
+                                                                    ) : (
+                                                                        <span className="text-xs text-muted-foreground italic block mt-1">Pendiente de contrafirma</span>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+
+                                                            {/* Paso 4 */}
+                                                            <div className="relative">
+                                                                <div className="absolute -left-[30px] top-0 w-6 h-0.5 mt-3 bg-border" />
+                                                                <div className={`absolute -left-[41px] top-0 w-6 h-6 rounded-full border-2 flex items-center justify-center text-[10px] font-black z-10 transition-all ${
+                                                                    step4Done ? "bg-emerald-500 border-emerald-500 text-white" : step3Done ? "bg-primary border-primary text-primary-foreground" : "bg-muted border-border text-muted-foreground"
+                                                                }`}>
+                                                                    {step4Done ? "✓" : "4"}
+                                                                </div>
+                                                                <div className="space-y-1">
+                                                                    <h4 className="text-xs font-bold text-foreground">Paso 4: Evidencias de Evaluación <span className="text-[10px] font-normal text-muted-foreground">(Aprendiz)</span></h4>
+                                                                    <p className="text-[11px] text-muted-foreground leading-snug">El aprendiz debe subir el enlace con los archivos o entregables que evidencien el cumplimiento de sus compromisos.</p>
+                                                                    {viewGroupPlanDetail.evidenceUrl ? (
+                                                                        <a href={viewGroupPlanDetail.evidenceUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs text-primary hover:underline font-bold mt-1">
+                                                                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                                                                            Ver Evidencia Cargada
+                                                                        </a>
+                                                                    ) : (
+                                                                        <span className="text-xs text-muted-foreground italic block mt-1">No cargada</span>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+
+                                                            {/* Paso 5 */}
+                                                            <div className="relative">
+                                                                <div className="absolute -left-[30px] top-0 w-6 h-0.5 mt-3 bg-border" />
+                                                                <div className={`absolute -left-[41px] top-0 w-6 h-6 rounded-full border-2 flex items-center justify-center text-[10px] font-black z-10 transition-all ${
+                                                                    step5Done ? "bg-emerald-500 border-emerald-500 text-white" : step4Done ? "bg-primary border-primary text-primary-foreground" : "bg-muted border-border text-muted-foreground"
+                                                                }`}>
+                                                                    {step5Done ? "✓" : "5"}
+                                                                </div>
+                                                                <div className="space-y-1">
+                                                                    <h4 className="text-xs font-bold text-foreground">Paso 5: Calificación Final <span className="text-[10px] font-normal text-muted-foreground">(Instructor)</span></h4>
+                                                                    <p className="text-[11px] text-muted-foreground leading-snug">El instructor califica el plan (0.0 a 5.0) evaluando el enlace de evidencias subido por el aprendiz.</p>
+                                                                    {viewGroupPlanDetail.finalGrade !== null && viewGroupPlanDetail.finalGrade !== undefined ? (
+                                                                        <div className="mt-1 bg-emerald-50 dark:bg-emerald-950/10 p-2.5 border border-emerald-200 rounded-xl inline-block">
+                                                                            <span className="text-xs font-black text-emerald-700 dark:text-emerald-300">
+                                                                                Nota Final: {viewGroupPlanDetail.finalGrade.toFixed(1)} / 5.0
+                                                                            </span>
+                                                                        </div>
+                                                                    ) : (
+                                                                        <span className="text-xs text-muted-foreground italic block mt-1">Sin calificar</span>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+
+                                                    <DialogFooter className="border-t pt-4">
+                                                        <Button variant="outline" className="h-10 rounded-xl font-bold" onClick={() => setViewGroupPlanDetail(null)}>Cerrar</Button>
+                                                        <Button className="gap-1 h-10 rounded-xl font-bold" onClick={() => { handleImpEmail(viewGroupPlanDetail); }}>
+                                                            <Mail className="w-4 h-4" />Enviar Correo
+                                                        </Button>
+                                                    </DialogFooter>
+                                                </div>
+                                            );
+                                        })()}
+                                    </DialogContent>
+                                </Dialog>
+
+                                {/* ── Teacher Countersign Modal (Step 3) ── */}
+                                <Dialog open={!!impTeacherSignDialog} onOpenChange={(o) => { if (!o) setImpTeacherSignDialog(null); }}>
+                                    <DialogContent className="max-w-md">
+                                        <DialogHeader>
+                                            <DialogTitle className="flex items-center gap-2"><FileText className="w-4 h-4 text-blue-600" />Subir mi Firma — Paso 3</DialogTitle>
+                                            <DialogDescription>Pega el enlace del documento del plan con tu firma (Google Drive, OneDrive, etc.).</DialogDescription>
+                                        </DialogHeader>
+                                        {impTeacherSignDialog && (
+                                            <form onSubmit={handleImpTeacherSign} className="space-y-4 pt-2">
+                                                <div className="space-y-1">
+                                                    <Label htmlFor="teacher-sign-url">URL del Documento Firmado por el Instructor *</Label>
+                                                    <Input id="teacher-sign-url" type="url" required placeholder="https://drive.google.com/..." value={impTeacherSignDialog.url} onChange={(e) => setImpTeacherSignDialog(prev => prev ? { ...prev, url: e.target.value } : prev)} />
+                                                </div>
+                                                <DialogFooter>
+                                                    <Button type="button" variant="outline" onClick={() => setImpTeacherSignDialog(null)}>Cancelar</Button>
+                                                    <Button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white">Confirmar Firma</Button>
+                                                </DialogFooter>
+                                            </form>
+                                        )}
+                                    </DialogContent>
+                                </Dialog>
+
+                                {/* ── Teacher Reset Plan Dialog ── */}
+                                <Dialog open={!!resetPlanDialog} onOpenChange={(open) => !open && setResetPlanDialog(null)}>
+                                    <DialogContent className="max-w-md rounded-2xl">
+                                        <DialogHeader>
+                                            <DialogTitle className="flex items-center gap-2 font-bold text-base text-amber-600">
+                                                <RotateCcw className="w-5 h-5" />
+                                                Devolver Paso de Plan
+                                            </DialogTitle>
+                                            <DialogDescription className="text-xs">
+                                                Selecciona a qué paso deseas regresar el plan de mejoramiento y opcionalmente añade un motivo. Esto notificará al aprendiz.
+                                            </DialogDescription>
+                                        </DialogHeader>
+                                        {resetPlanDialog && (
+                                            <form onSubmit={handleResetPlanSubmit} className="space-y-4 py-2 text-left">
+                                                <div className="space-y-1.5">
+                                                    <Label className="text-xs font-bold text-muted-foreground">Paso Destino *</Label>
+                                                    <Select
+                                                        value={String(resetPlanDialog.stepNumber)}
+                                                        onValueChange={val => setResetPlanDialog(prev => prev ? { ...prev, stepNumber: parseInt(val) } : null)}
+                                                    >
+                                                        <SelectTrigger className="h-10 rounded-lg bg-background">
+                                                            <SelectValue placeholder="Selecciona el paso" />
+                                                        </SelectTrigger>
+                                                        <SelectContent>
+                                                            <SelectItem value="1">Paso 1: Plan creado (Solo Instructor)</SelectItem>
+                                                            <SelectItem value="2">Paso 2: Firma del Aprendiz (Esperando firma)</SelectItem>
+                                                            <SelectItem value="3">Paso 3: Firma del Instructor (Esperando contrafirma)</SelectItem>
+                                                            <SelectItem value="4">Paso 4: Evidencias (Esperando evidencias)</SelectItem>
+                                                            <SelectItem value="5">Paso 5: Evaluación (Esperando calificación)</SelectItem>
+                                                        </SelectContent>
+                                                    </Select>
+                                                </div>
+                                                <div className="space-y-1.5">
+                                                    <Label htmlFor="reset-reason" className="text-xs font-bold text-muted-foreground">Motivo de Devolución</Label>
+                                                    <Textarea
+                                                        id="reset-reason"
+                                                        placeholder="Ej. La firma no es legible o falta cargar evidencias completas..."
+                                                        value={resetPlanDialog.reason}
+                                                        onChange={e => setResetPlanDialog(prev => prev ? { ...prev, reason: e.target.value } : prev)}
+                                                        className="min-h-[80px] rounded-lg bg-background"
+                                                    />
+                                                </div>
+                                                <DialogFooter>
+                                                    <Button type="button" variant="outline" onClick={() => setResetPlanDialog(null)}>Cancelar</Button>
+                                                    <Button type="submit" className="font-bold bg-amber-600 hover:bg-amber-700 text-white border-amber-600">Devolver Plan</Button>
+                                                </DialogFooter>
+                                            </form>
+                                        )}
+                                    </DialogContent>
+                                </Dialog>
+
+                                {/* ── Teacher Grade Plan Dialog ── */}
+                                <Dialog open={!!gradePlanDialog} onOpenChange={(open) => !open && setGradePlanDialog(null)}>
+                                    <DialogContent className="max-w-md rounded-2xl">
+                                        <DialogHeader>
+                                            <DialogTitle className="flex items-center gap-2 font-bold text-base text-emerald-600">
+                                                <CheckSquare className="w-5 h-5" />
+                                                Calificar Plan de Mejoramiento
+                                            </DialogTitle>
+                                            <DialogDescription className="text-xs">
+                                                Revisa el desarrollo y asigna la calificación definitiva (0.0 a 5.0) para este plan de mejoramiento.
+                                            </DialogDescription>
+                                        </DialogHeader>
+                                        {gradePlanDialog && (
+                                            <form onSubmit={handleGradePlanSubmit} className="space-y-4 py-2 text-left">
+                                                <div className="space-y-1.5">
+                                                    <Label htmlFor="teacher-plan-grade-input" className="text-xs font-bold text-muted-foreground">Calificación Definitiva (0.0 - 5.0) *</Label>
+                                                    <Input
+                                                        id="teacher-plan-grade-input"
+                                                        type="number"
+                                                        step="0.1"
+                                                        min="0"
+                                                        max="5"
+                                                        required
+                                                        placeholder="Ej. 4.3"
+                                                        value={gradePlanDialog.grade}
+                                                        onChange={e => setGradePlanDialog(prev => prev ? { ...prev, grade: e.target.value } : null)}
+                                                        className="h-10 rounded-lg bg-background"
+                                                    />
+                                                </div>
+                                                <DialogFooter>
+                                                    <Button type="button" variant="outline" onClick={() => setGradePlanDialog(null)}>Cancelar</Button>
+                                                    <Button type="submit" className="font-bold bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600">Confirmar Calificación</Button>
+                                                </DialogFooter>
+                                            </form>
+                                        )}
+                                    </DialogContent>
+                                </Dialog>
+
+                                {/* ── Teacher Request Evidence Resubmission Modal ── */}
+                                <RequestResubmissionModal
+                                    open={!!resubmitPlanModal?.open}
+                                    planId={resubmitPlanModal?.planId || null}
+                                    planNumber={resubmitPlanModal?.planNumber}
+                                    studentName={resubmitPlanModal?.studentName}
+                                    currentEndDate={resubmitPlanModal?.currentEndDate}
+                                    currentEvidenceUrl={resubmitPlanModal?.currentEvidenceUrl}
+                                    onClose={() => setResubmitPlanModal(null)}
+                                    onSuccess={() => {
+                                        loadGroupPlans();
+                                    }}
+                                />
+
+                                {/* ── Delete Confirm ── */}
+                                <AlertDialog open={!!impDeleteConfirm} onOpenChange={(o) => { if (!o) setImpDeleteConfirm(null); }}>
+                                    <AlertDialogContent>
+                                        <AlertDialogHeader>
+                                            <AlertDialogTitle>¿Eliminar este plan?</AlertDialogTitle>
+                                            <AlertDialogDescription>Esta acción no se puede deshacer. El plan de mejoramiento y todos sus datos serán eliminados permanentemente.</AlertDialogDescription>
+                                        </AlertDialogHeader>
+                                        <AlertDialogFooter>
+                                            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                                            <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => impDeleteConfirm && handleImpDelete(impDeleteConfirm)}>Eliminar</AlertDialogAction>
+                                        </AlertDialogFooter>
+                                    </AlertDialogContent>
+                                </AlertDialog>
+                            </TabsContent>
+                        </div>
+                    </Tabs>
+                ) : (
+                    <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground h-[600px]">
+                        <Users className="w-20 h-20 mb-6 opacity-20" />
+                        <h2 className="text-2xl font-bold text-foreground">Ningún Grupo Seleccionado</h2>
+                        <p className="mt-2">Utiliza el selector en la parte superior para elegir un grupo.</p>
+                    </div>
+                )}
+            </Card>
+
+            
+
+
+
+            {/* Student Attendance Details Dialog */}
+            <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
+                <DialogContent className="max-w-md rounded-2xl">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2 text-base font-bold">
+                            <Clock className="h-5 w-5 text-primary" />
+                            Historial de Asistencia
+                        </DialogTitle>
+                        <DialogDescription className="text-xs">
+                            Detalle de inasistencias y llegadas tarde de <strong>{detailStudent ? formatName(detailStudent.name, detailStudent.profile) : ""}</strong>.
+                        </DialogDescription>
+                        {(selectedGroup?.courses?.length || 0) > 1 && (
+                            <div className="flex items-center gap-2 pt-1 text-xs">
+                                <span className="font-semibold text-muted-foreground text-[11px]">Materia:</span>
+                                <div className="inline-flex items-center bg-muted/60 p-0.5 rounded-lg border border-border/50">
+                                    <button
+                                        type="button"
+                                        onClick={() => setDetailMateriaFilter("current")}
+                                        className={cn(
+                                            "px-2 py-0.5 rounded-md text-[11px] font-bold transition-all truncate max-w-[170px]",
+                                            detailMateriaFilter === "current"
+                                                ? "bg-background text-primary shadow-xs"
+                                                : "text-muted-foreground hover:text-foreground"
+                                        )}
+                                        title={selectedGroup.courses.find((c: any) => c.id === attCourseId)?.title || "Esta Materia"}
+                                    >
+                                        {selectedGroup.courses.find((c: any) => c.id === attCourseId)?.title || "Esta Materia"}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setDetailMateriaFilter("all")}
+                                        className={cn(
+                                            "px-2 py-0.5 rounded-md text-[11px] font-bold transition-all",
+                                            detailMateriaFilter === "all"
+                                                ? "bg-background text-primary shadow-xs"
+                                                : "text-muted-foreground hover:text-foreground"
+                                        )}
+                                    >
+                                        Todas las materias
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+                    </DialogHeader>
+
+                    <div className="py-2">
+                        {(() => {
+                            if (!detailStudent) return null;
+                            const studentHistory = attendanceHistory.filter(a => {
+                                if (a.userId !== detailStudent.id || a.status === 'PRESENT') return false;
+                                if (detailMateriaFilter === "current" && a.courseId !== attCourseId) return false;
+                                return true;
+                            });
+                            const currentHistory = studentHistory.filter(a => isRecordInCurrentSchedule(a, a.courseId || attCourseId));
+                            const previousHistory = studentHistory.filter(a => !isRecordInCurrentSchedule(a, a.courseId || attCourseId));
+
+                            // Registros según el alcance seleccionado
+                            const scopedHistory = detailScheduleScope === "current"
+                                ? currentHistory
+                                : detailScheduleScope === "previous"
+                                    ? previousHistory
+                                    : studentHistory;
+
+                            const absencesList = scopedHistory.filter(a => a.status === 'ABSENT');
+                            const latesList = scopedHistory.filter(a => a.status === 'LATE' || a.status === 'LEAVE_EARLY' || a.arrivalTime || a.departureTime);
+
+                            const renderRecordCard = (att: any) => {
+                                const dateLabel = formatCalendarDate(att.date, "eeee, d 'de' MMMM 'de' yyyy");
+                                const isAbsent = att.status === 'ABSENT';
+                                const isJustified = !!(att.justification?.trim() || att.justificationUrl);
+                                const isLate = att.status === 'LATE' || !!att.arrivalTime;
+                                const isLeaveEarly = att.status === 'LEAVE_EARLY' || !!att.departureTime;
+                                const isDual = isLate && isLeaveEarly;
+                                const isCurr = isRecordInCurrentSchedule(att, att.courseId || attCourseId);
+
+                                const st = resolveAttendanceStatusStyle(att);
+                                const badgeLabel = st.label;
+                                const badgeClass = cn(st.badgeClass, "text-[10px]");
+
+                                return (
+                                    <div key={att.id} className="p-3 rounded-xl border border-border bg-card/50 flex flex-col gap-1.5 text-left">
+                                        <div className="flex items-center justify-between gap-2">
+                                            <div className="flex items-center gap-1.5 flex-wrap min-w-0">
+                                                <span className="text-xs font-bold text-foreground capitalize truncate">{dateLabel}</span>
+                                                {!isCurr && (
+                                                    <Badge variant="outline" className="bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/30 text-[9px] px-1.5 py-0 font-bold">
+                                                        Horario Anterior
+                                                    </Badge>
+                                                )}
+                                            </div>
+                                            <div className="flex items-center gap-1.5 shrink-0">
+                                                <Badge className={isJustified ? "bg-emerald-600 hover:bg-emerald-700 text-white text-[10px]" : "bg-rose-600 hover:bg-rose-700 text-white text-[10px]"}>
+                                                    {isJustified ? "Justificado" : "No Justificado"}
+                                                </Badge>
+                                                <Badge variant="outline" className={badgeClass}>
+                                                    {badgeLabel}
+                                                </Badge>
+                                            </div>
+                                        </div>
+                                        <div className="text-[11px] text-muted-foreground">
+                                            <span className="font-semibold text-primary">Materia:</span> {att.course?.title || "N/A"}
+                                        </div>
+                                        {att.arrivalTime && (
+                                            <div className="text-[11px] text-muted-foreground">
+                                                <span className="font-semibold text-amber-600">Hora Ingreso:</span> {formatTime12h(att.arrivalTime)}
+                                            </div>
+                                        )}
+                                        {att.departureTime && (
+                                            <div className="text-[11px] text-muted-foreground">
+                                                <span className="font-semibold text-sky-600 dark:text-sky-400">Hora Retiro:</span> {formatTime12h(att.departureTime)}
+                                            </div>
+                                        )}
+                                        <div className="mt-1 flex items-center justify-between gap-2 pt-1 border-t border-muted/30">
+                                            <span className="text-[11px] font-semibold text-muted-foreground">Justificación:</span>
+                                            {isJustified ? (
+                                                <Button
+                                                    type="button"
+                                                    variant="outline"
+                                                    size="sm"
+                                                    className="h-6 px-2 text-[11px] font-semibold text-primary border-primary/30 hover:bg-primary/10 rounded-lg gap-1 shadow-xs"
+                                                    onClick={() => setViewJustificationDialog({
+                                                        open: true,
+                                                        studentName: detailStudent ? formatName(detailStudent.name, detailStudent.profile) : "Aprendiz",
+                                                        studentId: detailStudent?.profile?.identificacion,
+                                                        date: dateLabel,
+                                                        status: isAbsent ? "Falta" : isDual ? "Tarde + Retiro" : isLate ? "Tarde" : "Retiro",
+                                                        justification: att.justification || "",
+                                                        linkUrl: getJustificationLink(att)
+                                                    })}
+                                                >
+                                                    <Eye className="w-3 h-3 text-primary" />
+                                                    Ver justificación
+                                                </Button>
+                                            ) : (
+                                                <span className="text-[11px] text-muted-foreground/60 italic">Sin justificación</span>
+                                            )}
+                                        </div>
+                                    </div>
+                                );
+                            };
+
+                            const renderGroupedCards = (items: any[], emptyText: string) => {
+                                if (items.length === 0) {
+                                    return (
+                                        <div className="text-center py-8 text-sm text-muted-foreground italic bg-muted/20 rounded-xl border border-dashed border-muted">
+                                            {emptyText}
+                                        </div>
+                                    );
+                                }
+
+                                if (detailScheduleScope !== "all") {
+                                    return items.map(renderRecordCard);
+                                }
+
+                                const curItems = items.filter(a => isRecordInCurrentSchedule(a, a.courseId || attCourseId));
+                                const prevItems = items.filter(a => !isRecordInCurrentSchedule(a, a.courseId || attCourseId));
+
+                                return (
+                                    <div className="space-y-4">
+                                        {/* Bloque Horario Actual */}
+                                        <div className="space-y-2">
+                                            <div className="flex items-center justify-between px-1">
+                                                <span className="text-[11px] font-black uppercase tracking-wider text-primary flex items-center gap-1.5">
+                                                    <CalendarClock className="w-3.5 h-3.5" /> Horario Actual (Vigente)
+                                                </span>
+                                                <Badge variant="outline" className="text-[10px] px-2 py-0 border-primary/30 text-primary bg-primary/5 font-bold">
+                                                    {curItems.length} {curItems.length === 1 ? "registro" : "registros"}
+                                                </Badge>
+                                            </div>
+                                            {curItems.length === 0 ? (
+                                                <div className="text-xs text-muted-foreground italic px-3 py-2 bg-muted/10 rounded-lg border border-dashed text-center">
+                                                    Sin registros en el horario actual.
+                                                </div>
+                                            ) : (
+                                                curItems.map(renderRecordCard)
+                                            )}
+                                        </div>
+
+                                        {/* Bloque Horarios Anteriores */}
+                                        <div className="space-y-2 pt-2 border-t border-border/60">
+                                            <div className="flex items-center justify-between px-1">
+                                                <span className="text-[11px] font-black uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                                                    <History className="w-3.5 h-3.5" /> Horarios Anteriores (Histórico)
+                                                </span>
+                                                <Badge variant="outline" className="text-[10px] px-2 py-0 border-muted text-muted-foreground bg-muted/30 font-bold">
+                                                    {prevItems.length} {prevItems.length === 1 ? "registro" : "registros"}
+                                                </Badge>
+                                            </div>
+                                            {prevItems.length === 0 ? (
+                                                <div className="text-xs text-muted-foreground italic px-3 py-2 bg-muted/10 rounded-lg border border-dashed text-center">
+                                                    Sin registros en horarios anteriores.
+                                                </div>
+                                            ) : (
+                                                prevItems.map(renderRecordCard)
+                                            )}
+                                        </div>
+                                    </div>
+                                );
+                            };
+
+                            return (
+                                <div className="space-y-3">
+                                    {/* Selector de Ámbito de Horario (Actual vs Anteriores) */}
+                                    <div className="flex items-center p-1 bg-muted/60 rounded-xl gap-1">
+                                        <button
+                                            type="button"
+                                            onClick={() => setDetailScheduleScope("current")}
+                                            className={cn(
+                                                "flex-1 py-1.5 px-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5",
+                                                detailScheduleScope === "current"
+                                                    ? "bg-background text-primary shadow-xs border border-primary/20"
+                                                    : "text-muted-foreground hover:text-foreground"
+                                            )}
+                                        >
+                                            <CalendarClock className="w-3.5 h-3.5 text-primary" />
+                                            <span>Horario Actual</span>
+                                            <Badge variant="secondary" className="text-[10px] h-4.5 px-1.5 font-bold">
+                                                {currentHistory.length}
+                                            </Badge>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setDetailScheduleScope("previous")}
+                                            className={cn(
+                                                "flex-1 py-1.5 px-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5",
+                                                detailScheduleScope === "previous"
+                                                    ? "bg-background text-foreground shadow-xs border border-border"
+                                                    : "text-muted-foreground hover:text-foreground"
+                                            )}
+                                        >
+                                            <History className="w-3.5 h-3.5 text-muted-foreground" />
+                                            <span>Horarios Anteriores</span>
+                                            <Badge variant="secondary" className="text-[10px] h-4.5 px-1.5 font-bold">
+                                                {previousHistory.length}
+                                            </Badge>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setDetailScheduleScope("all")}
+                                            className={cn(
+                                                "py-1.5 px-2.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1",
+                                                detailScheduleScope === "all"
+                                                    ? "bg-background text-foreground shadow-xs border border-border"
+                                                    : "text-muted-foreground hover:text-foreground"
+                                            )}
+                                        >
+                                            <span>Todos</span>
+                                            <Badge variant="outline" className="text-[10px] h-4.5 px-1.5 font-bold">
+                                                {studentHistory.length}
+                                            </Badge>
+                                        </button>
+                                    </div>
+
+                                    {/* Tabs por Tipo de Registro */}
+                                    <Tabs defaultValue="faltas" className="w-full">
+                                        <TabsList className="grid w-full grid-cols-2 mb-3 bg-muted/60 p-1 rounded-xl">
+                                            <TabsTrigger value="faltas" className="rounded-lg text-xs font-bold py-1.5 data-[state=active]:bg-background text-red-600 dark:text-red-400">
+                                                Faltas ({absencesList.length})
+                                            </TabsTrigger>
+                                            <TabsTrigger value="tardes" className="rounded-lg text-xs font-bold py-1.5 data-[state=active]:bg-background text-amber-600 dark:text-amber-400">
+                                                Tardes y Retiros ({latesList.length})
+                                            </TabsTrigger>
+                                        </TabsList>
+                                        
+                                        <TabsContent value="faltas" className="outline-none m-0">
+                                            <div className="space-y-2.5 max-h-[45vh] overflow-y-auto pr-1.5 custom-scrollbar">
+                                                {renderGroupedCards(absencesList, "No hay inasistencias registradas.")}
+                                            </div>
+                                        </TabsContent>
+                                        
+                                        <TabsContent value="tardes" className="outline-none m-0">
+                                            <div className="space-y-2.5 max-h-[45vh] overflow-y-auto pr-1.5 custom-scrollbar">
+                                                {renderGroupedCards(latesList, "No hay llegadas tarde o retiros registrados.")}
+                                            </div>
+                                        </TabsContent>
+                                    </Tabs>
+                                </div>
+                            );
+                        })()}
+                    </div>
+
+                    <DialogFooter>
+                        <Button onClick={() => setDetailOpen(false)} className="w-full sm:w-auto">Cerrar</Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* Full Justification Viewer Dialog */}
+            <Dialog open={!!viewJustificationDialog?.open} onOpenChange={(open) => !open && setViewJustificationDialog(null)}>
+                <DialogContent className="max-w-lg rounded-2xl p-6">
+                    <DialogHeader className="space-y-2">
+                        <DialogTitle className="flex items-center gap-2 text-base font-black text-foreground">
+                            <FileText className="h-5 w-5 text-primary" />
+                            Justificación de Asistencia
+                        </DialogTitle>
+                        {viewJustificationDialog && (
+                            <div className="flex flex-wrap items-center gap-2 pt-1 text-xs">
+                                <span className="font-bold text-foreground">{viewJustificationDialog.studentName}</span>
+                                {viewJustificationDialog.studentId && (
+                                    <span className="text-muted-foreground font-mono">({viewJustificationDialog.studentId})</span>
+                                )}
+                                <span className="text-muted-foreground">•</span>
+                                <span className="text-muted-foreground">{viewJustificationDialog.date}</span>
+                                <Badge variant="outline" className="font-bold text-[10px] uppercase ml-auto">
+                                    {viewJustificationDialog.status}
+                                </Badge>
+                            </div>
+                        )}
+                    </DialogHeader>
+
+                    <div className="space-y-4 py-2">
+                        <div className="space-y-1.5">
+                            <Label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                                Texto Completo de la Justificación
+                            </Label>
+                            <div className="p-4 rounded-xl bg-muted/30 border border-border text-sm text-foreground whitespace-pre-wrap leading-relaxed max-h-[250px] overflow-y-auto font-medium">
+                                {viewJustificationDialog?.justification || "Sin texto de justificación."}
+                            </div>
+                        </div>
+
+                        {viewJustificationDialog?.linkUrl && (
+                            <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                                <div className="space-y-0.5">
+                                    <p className="text-xs font-bold text-emerald-900 dark:text-emerald-300">Enlace / Soporte Adjunto</p>
+                                    <p className="text-[11px] text-emerald-700 dark:text-emerald-400 truncate max-w-[280px]">
+                                        {viewJustificationDialog.linkUrl}
+                                    </p>
+                                </div>
+                                <Button 
+                                    size="sm"
+                                    className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold gap-1.5 shrink-0 rounded-xl"
+                                    onClick={() => window.open(viewJustificationDialog.linkUrl!, "_blank")}
+                                >
+                                    <ExternalLink className="w-3.5 h-3.5" />
+                                    Abrir Enlace
+                                </Button>
+                            </div>
+                        )}
+                    </div>
+
+                    <DialogFooter>
+                        <Button variant="outline" className="rounded-xl font-bold" onClick={() => setViewJustificationDialog(null)}>
+                            Cerrar
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* Student Analytics Dialog */}
+            <Dialog open={!!selectedStudentForAnalytics} onOpenChange={(open) => !open && setSelectedStudentForAnalytics(null)}>
+                <DialogContent showCloseButton={false} className="!max-w-[100vw] sm:!max-w-[100vw] w-screen h-screen m-0 p-6 !rounded-none overflow-y-auto border-none bg-background flex flex-col">
+                    {selectedStudentForAnalytics && (
+                        <div className="space-y-6 flex-1 flex flex-col min-h-0">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b">
+                                <div className="space-y-1.5">
+                                    <div className="flex items-center gap-2">
+                                        <Badge variant="outline" className="px-2.5 py-0.5 text-xs font-bold bg-primary/10 text-primary border-primary/20 gap-1.5 rounded-full">
+                                            <GraduationCap className="w-3.5 h-3.5" />
+                                            Registro Académico Individual
+                                        </Badge>
+                                        {selectedStudentForAnalytics.profile?.identificacion && (
+                                            <span className="text-xs font-bold text-muted-foreground bg-muted/60 px-2 py-0.5 rounded-md border">
+                                                Doc: {selectedStudentForAnalytics.profile.identificacion}
+                                            </span>
+                                        )}
+                                    </div>
+                                    <DialogTitle className="text-3xl sm:text-4xl font-black text-foreground tracking-tight flex items-center gap-3 pt-1">
+                                        <span className="bg-gradient-to-r from-foreground via-foreground to-primary bg-clip-text text-transparent">
+                                            {formatName(selectedStudentForAnalytics.name, selectedStudentForAnalytics.profile)}
+                                        </span>
+                                        <StudentNovedadBadge novedad={selectedStudentForAnalytics.profile?.novedad} color={selectedStudentForAnalytics.profile?.novedadColor} />
+                                        <StudentVoceroBadge role={selectedStudentForAnalytics.id === selectedGroup?.voceroPrincipalId ? "PRINCIPAL" : selectedStudentForAnalytics.id === selectedGroup?.voceroSuplenteId ? "SUPLENTE" : null} />
+                                    </DialogTitle>
+                                    <DialogDescription className="text-xs sm:text-sm font-medium text-muted-foreground flex items-center gap-2">
+                                        <span>{selectedStudentForAnalytics.email}</span>
+                                    </DialogDescription>
+                                </div>
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => setSelectedStudentForAnalytics(null)}
+                                    className="h-9 px-3.5 rounded-xl border-border/80 hover:bg-muted text-foreground font-bold text-xs gap-1.5 shadow-2xs shrink-0 cursor-pointer self-start sm:self-center"
+                                >
+                                    <X className="w-3.5 h-3.5" />
+                                    <span>Cerrar</span>
+                                </Button>
+                            </div>
+                            <div className="flex-1 overflow-y-auto min-h-0">
+                                <StudentRecords studentId={selectedStudentForAnalytics.id} hideTables={false} hideDocumentation={true} />
+                            </div>
+                        </div>
+                    )}
+                </DialogContent>
+            </Dialog>
+
+            {/* Generic Confirmation Dialog */}
+            <AlertDialog open={!!confirmConfig} onOpenChange={(open) => !open && setConfirmConfig(null)}>
+                <AlertDialogContent className="rounded-2xl">
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>{confirmConfig?.title || "¿Estás seguro?"}</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            {confirmConfig?.description || "Esta acción no se puede deshacer."}
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel onClick={() => setConfirmConfig(null)}>Cancelar</AlertDialogCancel>
+                        <AlertDialogAction 
+                            onClick={async () => {
+                                if (confirmConfig?.onConfirm) {
+                                    await confirmConfig.onConfirm();
+                                }
+                                setConfirmConfig(null);
+                            }}
+                            className="bg-destructive hover:bg-destructive/90 text-destructive-foreground cursor-pointer"
+                        >
+                            Confirmar
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+
+            {/* Unsaved Changes Warning Dialog */}
+            <AlertDialog open={!!pendingAction} onOpenChange={(open) => !open && setPendingAction(null)}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>¿Descartar cambios sin guardar?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            Tienes cambios en el registro de asistencia de la clase actual que no han sido guardados.
+                            Si continúas, estos cambios se perderán definitivamente.
+                            <br/><br/>
+                            ¿Deseas descartar los cambios y continuar?
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter className="flex-col-reverse sm:flex-row gap-2 sm:gap-0 sm:space-x-2">
+                        <AlertDialogCancel onClick={() => setPendingAction(null)}>Cancelar</AlertDialogCancel>
+                        <AlertDialogAction
+                            onClick={confirmPendingAction}
+                            className="bg-destructive hover:bg-destructive/90 text-destructive-foreground font-semibold"
+                        >
+                            Descartar y Continuar
+                        </AlertDialogAction>
+                        <AlertDialogAction
+                            onClick={saveAndConfirmPendingAction}
+                            className="bg-primary hover:bg-primary/90 text-primary-foreground font-semibold"
+                        >
+                            Guardar y Continuar
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+
+            {/* Reset Password Confirmation Dialog */}
+            <AlertDialog open={resetPasswordDialogOpen} onOpenChange={setResetPasswordDialogOpen}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>¿Restablecer contraseña?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            Estás a punto de restablecer la contraseña de 
+                            {studentToResetPassword && ` "${formatName(studentToResetPassword.name, studentToResetPassword.profile)}" `} 
+                            a su número de documento de identidad ({studentToResetPassword?.profile?.identificacion || 'No disponible'}).
+                            <br/><br/>
+                            ¿Estás seguro de que deseas continuar?
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel disabled={isResetting}>Cancelar</AlertDialogCancel>
+                        <AlertDialogAction
+                            onClick={handleResetPassword}
+                            disabled={isResetting}
+                            className="bg-amber-600 text-white hover:bg-amber-700"
+                        >
+                            {isResetting ? "Restableciendo..." : "Restablecer Contraseña"}
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+
+            {mounted && isSequentialFullscreen && createPortal(
+                <AnimatePresence>
+                    <motion.div 
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-[9999] bg-background flex flex-col h-screen w-screen overflow-hidden p-6 select-none"
+                    >
+                        {/* Header: Full Screen title & Close Button */}
+                        <div className="flex items-center justify-between border-b pb-4 shrink-0">
+                            <div className="flex items-center gap-3">
+                                <Badge className="bg-primary/10 text-primary hover:bg-primary/10 border-primary/20 text-xs font-bold px-2.5 py-1">
+                                    <Clock className="w-3.5 h-3.5 mr-1" />
+                                    Sesión de Asistencia Activa
+                                </Badge>
+                                <span className="text-sm font-semibold text-muted-foreground">
+                                    Materia: {selectedGroup.courses?.find((c: any) => c.id === attCourseId)?.title}
+                                </span>
+                            </div>
+                            <Button 
+                                variant="outline" 
+                                size="sm"
+                                onClick={exitSequentialFullscreen}
+                                className="h-8 px-3 rounded-lg border-border/80 hover:bg-muted text-foreground font-bold text-xs gap-1.5 shadow-2xs shrink-0 cursor-pointer"
+                            >
+                                <X className="w-3.5 h-3.5" />
+                                <span>Cerrar</span>
+                            </Button>
+                        </div>
+
+                        {/* Main sequence content */}
+                        {filteredStudents.length > 0 ? (() => {
+                            const currentStudent = filteredStudents[seqIndex];
+                            const rec = attRecords[currentStudent.id];
+                            const isAbsent = rec?.status === "ABSENT";
+                            const isLate = rec?.status === "LATE";
+                            const isLeaveEarly = rec?.status === "LEAVE_EARLY";
+                            const isPresent = rec?.status === "PRESENT";
+                            
+                            const { absentCount, lateCount, leaveCount } = studentAttendanceStats[currentStudent.id] || { absentCount: 0, lateCount: 0, leaveCount: 0 };
+
+                            return (
+                                <div className="flex-1 flex flex-col justify-between py-6 min-h-0">
+                                    {/* Progress indicator */}
+                                    <div className="w-full max-w-xl mx-auto shrink-0 space-y-2">
+                                        <div className="flex justify-between text-xs font-bold text-muted-foreground">
+                                            <span>PROGRESO DE LLAMADO</span>
+                                            <span>{seqIndex + 1} de {filteredStudents.length} ({Math.round(((seqIndex + 1) / filteredStudents.length) * 100)}%)</span>
+                                        </div>
+                                        <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
+                                            <div 
+                                                className="h-full bg-primary transition-all duration-300"
+                                                style={{ width: `${((seqIndex + 1) / filteredStudents.length) * 100}%` }}
+                                            />
+                                        </div>
+                                    </div>
+
+                                    {/* Center Block: Avatar, Name, History statistics - Fits perfectly without card */}
+                                    <div className="flex-1 flex flex-col items-center justify-center min-h-0 py-4 max-w-2xl mx-auto w-full">
+                                        <Avatar className="w-40 h-40 border-4 border-primary/20 shadow-md mb-6 shrink-0">
+                                            <AvatarImage src={currentStudent.image} />
+                                            <AvatarFallback className="text-5xl bg-primary/10 text-primary font-black">
+                                                {currentStudent.name?.substring(0, 2).toUpperCase()}
+                                            </AvatarFallback>
+                                        </Avatar>
+
+                                        <div className="text-center space-y-2 shrink-0">
+                                            <h2 className="text-4xl font-black text-foreground tracking-tight max-w-xl mx-auto break-words leading-none">
+                                                {formatName(currentStudent.name, currentStudent.profile)}
+                                            </h2>
+                                        </div>
+
+                                        {/* Quick badge indicating if attendance is marked for this session */}
+                                         <div className="h-10 mt-4 shrink-0">
+                                             {rec && (
+                                                 <Badge className={`text-xs font-black px-4 py-1.5 shadow-sm ${
+                                                     isAbsent 
+                                                         ? 'bg-rose-100 hover:bg-rose-200/80 text-rose-800 border border-rose-300 dark:bg-rose-950/60 dark:text-rose-200 dark:border-rose-700/60' 
+                                                         : isLate 
+                                                             ? 'bg-amber-100 hover:bg-amber-200/80 text-amber-900 border border-amber-300 dark:bg-amber-950/60 dark:text-amber-200 dark:border-amber-700/60'
+                                                             : isLeaveEarly
+                                                                 ? 'bg-sky-100 hover:bg-sky-200/80 text-sky-900 border border-sky-300 dark:bg-sky-950/60 dark:text-sky-200 dark:border-sky-700/60'
+                                                                 : 'bg-emerald-100 hover:bg-emerald-200/80 text-emerald-800 border border-emerald-300 dark:bg-emerald-950/60 dark:text-emerald-200 dark:border-emerald-700/60'
+                                                 }`}>
+                                                     {isAbsent ? 'Falta Marcada' : isLate ? 'Llegada Tarde Marcada' : isLeaveEarly ? 'Retiro Temprano Marcado' : 'Presente Marcado'}
+                                                 </Badge>
+                                             )}
+                                         </div>
+
+                                         {/* Statistics block */}
+                                         <div className="mt-6 p-4 rounded-2xl bg-muted/30 border border-border/60 w-full max-w-sm flex justify-around shrink-0">
+                                             <div className="text-center">
+                                                 <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest mb-1">Inasistencias</p>
+                                                 <p className="text-3xl font-black text-rose-700 dark:text-rose-300">{absentCount}</p>
+                                             </div>
+                                             <div className="w-px bg-border/60" />
+                                             <div className="text-center">
+                                                 <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest mb-1">Retrasos</p>
+                                                 <p className="text-3xl font-black text-amber-800 dark:text-amber-300">{lateCount}</p>
+                                             </div>
+                                             <div className="w-px bg-border/60" />
+                                             <div className="text-center">
+                                                 <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest mb-1">Retiros</p>
+                                                 <p className="text-3xl font-black text-sky-800 dark:text-sky-300">{leaveCount}</p>
+                                             </div>
+                                         </div>
+
+                                         {/* Time entry selectors nested under avatar */}
+                                        <AnimatePresence>
+                                            {isLate && (
+                                                <motion.div 
+                                                    initial={{ opacity: 0, y: 10 }}
+                                                    animate={{ opacity: 1, y: 0 }}
+                                                    exit={{ opacity: 0, y: 10 }}
+                                                    className="mt-6 w-full max-w-xs shrink-0 bg-amber-500/10 border border-amber-500/20 rounded-xl p-3 flex flex-col items-center gap-2"
+                                                >
+                                                    <Label className="text-xs font-bold text-amber-700 dark:text-amber-400">AJUSTAR HORA DE INGRESO</Label>
+                                                    <select 
+                                                        disabled={isSavingAtt}
+                                                        className="h-10 w-40 rounded-lg border border-amber-300 dark:border-amber-900 bg-background text-base font-bold text-center text-amber-900 dark:text-amber-200 px-2 outline-none focus:ring-2 focus:ring-amber-500 cursor-pointer"
+                                                        value={rec?.arrivalTime || ""}
+                                                        onChange={e => updateLateTime(currentStudent.id, e.target.value)} 
+                                                    >
+                                                        <option value="" disabled>Seleccione...</option>
+                                                        {rec?.arrivalTime && !currentSessionTimeOptions.lateOptions.includes(rec.arrivalTime) && (
+                                                            <option value={rec.arrivalTime}>{rec.arrivalTime} (Fuera de rango)</option>
+                                                        )}
+                                                        {currentSessionTimeOptions.lateOptions.map(time => (
+                                                            <option key={time} value={time}>{time}</option>
+                                                        ))}
+                                                    </select>
+                                                    {rec?.arrivalTime && (() => {
+                                                        const lost = getLostHoursForAttendance(
+                                                            currentSessionTimeOptions.sessionStart,
+                                                            currentSessionTimeOptions.sessionEnd,
+                                                            rec.arrivalTime,
+                                                            rec.departureTime
+                                                        );
+                                                        return (
+                                                            <p className="text-[11px] text-amber-600 dark:text-amber-400 font-bold">
+                                                                Horas perdidas: {lost.lateLostHours.toFixed(1)} hs
+                                                            </p>
+                                                        );
+                                                    })()}
+                                                </motion.div>
+                                            )}
+                                            {isLeaveEarly && (
+                                                <motion.div 
+                                                    initial={{ opacity: 0, y: 10 }}
+                                                    animate={{ opacity: 1, y: 0 }}
+                                                    exit={{ opacity: 0, y: 10 }}
+                                                    className="mt-6 w-full max-w-xs shrink-0 bg-sky-500/10 border border-sky-500/20 rounded-xl p-3 flex flex-col items-center gap-2"
+                                                >
+                                                    <Label className="text-xs font-bold text-sky-800 dark:text-sky-300">HORA DE RETIRO</Label>
+                                                    <select 
+                                                        disabled={isSavingAtt}
+                                                        className="h-10 w-40 rounded-lg border border-sky-300 dark:border-sky-800 bg-background text-base font-bold text-center text-sky-900 dark:text-sky-200 px-2 outline-none focus:ring-2 focus:ring-sky-500 cursor-pointer"
+                                                        value={rec?.departureTime || ""}
+                                                        onChange={e => updateLeaveTime(currentStudent.id, e.target.value)} 
+                                                    >
+                                                        <option value="" disabled>Seleccione...</option>
+                                                        {rec?.departureTime && !currentSessionTimeOptions.leaveOptions.includes(rec.departureTime) && (
+                                                            <option value={rec.departureTime}>{rec.departureTime} (Fuera de rango)</option>
+                                                        )}
+                                                        {currentSessionTimeOptions.leaveOptions.map(time => (
+                                                            <option key={time} value={time}>{time}</option>
+                                                        ))}
+                                                    </select>
+                                                    {rec?.departureTime && (() => {
+                                                        const lost = getLostHoursForAttendance(
+                                                            currentSessionTimeOptions.sessionStart,
+                                                            currentSessionTimeOptions.sessionEnd,
+                                                            rec.arrivalTime,
+                                                            rec.departureTime
+                                                        );
+                                                        return (
+                                                            <p className="text-[11px] text-sky-700 dark:text-sky-300 font-bold">
+                                                                Horas perdidas: {lost.leaveLostHours.toFixed(1)} hs
+                                                            </p>
+                                                        );
+                                                    })()}
+                                                </motion.div>
+                                            )}
+                                        </AnimatePresence>
+                                    </div>
+
+                                    {/* Action Buttons: Giant controls for easy click/touch */}
+                                     <div className="shrink-0 w-full max-w-xl mx-auto space-y-4">
+                                         <div className="flex gap-4">
+                                             <Button 
+                                                 size="lg" 
+                                                 variant="outline" 
+                                                 disabled={isSavingAtt}
+                                                 className={`flex-1 h-20 rounded-2xl font-black text-lg transition-all border-2 ${
+                                                     isAbsent 
+                                                         ? 'bg-rose-100 hover:bg-rose-200/90 text-rose-800 border-rose-300 dark:bg-rose-950/60 dark:text-rose-200 dark:border-rose-700/60 shadow-sm ring-2 ring-rose-400/30' 
+                                                         : 'border-rose-200/80 text-rose-700 dark:text-rose-300 hover:bg-rose-50/70 dark:border-rose-800/40 dark:hover:bg-rose-950/30'
+                                                 }`}
+                                                 onClick={() => { 
+                                                     setStudentAttendance(currentStudent.id, isAbsent ? "UNMARKED" : "ABSENT"); 
+                                                     if (!isAbsent) {
+                                                         setTimeout(nextSeqStudent, 300); 
+                                                     }
+                                                 }}
+                                             >
+                                                 <UserX className="w-6 h-6 mr-2" /> Ausente
+                                             </Button>
+
+                                             <Button 
+                                                 size="lg" 
+                                                 disabled={isSavingAtt}
+                                                 className={`flex-1 h-20 rounded-2xl font-black text-lg shadow-sm flex items-center justify-center gap-2 transition-all border-2 ${
+                                                     isPresent 
+                                                         ? 'bg-emerald-200 hover:bg-emerald-300/80 text-emerald-900 border-emerald-400 dark:bg-emerald-900/60 dark:text-emerald-100 dark:border-emerald-600 ring-2 ring-emerald-400/30' 
+                                                         : 'bg-emerald-100 hover:bg-emerald-200/80 text-emerald-800 border-emerald-300 dark:bg-emerald-950/60 dark:text-emerald-200 dark:border-emerald-700/60'
+                                                 }`}
+                                                 onClick={() => { 
+                                                     setStudentAttendance(currentStudent.id, "PRESENT"); 
+                                                     nextSeqStudent(); 
+                                                 }}
+                                             >
+                                                 <UserCheck className="w-6 h-6" /> Presente
+                                             </Button>
+                                         </div>
+
+                                        {/* Secondary navigation */}
+                                        <div className="flex justify-between items-center pt-2 text-muted-foreground">
+                                            <Button 
+                                                variant="ghost" 
+                                                disabled={seqIndex === 0 || isSavingAtt} 
+                                                onClick={prevSeqStudent} 
+                                                className="font-bold text-xs"
+                                            >
+                                                <ArrowLeft className="w-4 h-4 mr-1.5" /> ANTERIOR
+                                            </Button>
+                                            <Button 
+                                                variant="ghost" 
+                                                disabled={seqIndex === filteredStudents.length - 1 || isSavingAtt} 
+                                                onClick={nextSeqStudent} 
+                                                className="font-bold text-xs"
+                                            >
+                                                SALTAR <ArrowRight className="w-4 h-4 ml-1.5" />
+                                            </Button>
+                                        </div>
+                                    </div>
+                                </div>
+                            );
+                        })() : (
+                            <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground">
+                                <Users className="w-16 h-16 mb-4 opacity-40" />
+                                <p className="text-lg font-bold">No hay aprendices en el grupo para llamar asistencia</p>
+                            </div>
+                        )}
+                    </motion.div>
+                </AnimatePresence>,
+                document.body
+            )}
+
+
+            <AlertDialog open={!!attendanceToDelete} onOpenChange={(open) => { if (!open) setAttendanceToDelete(null); }}>
+                <AlertDialogContent className="rounded-xl border-primary/20 bg-background">
+                    <AlertDialogHeader>
+                        <AlertDialogTitle className="text-lg font-black text-foreground">¿Confirmar eliminación?</AlertDialogTitle>
+                        <AlertDialogDescription className="text-sm text-muted-foreground">
+                            ¿Estás seguro de que deseas eliminar este registro de inasistencia/tardanza para <strong className="text-foreground">{attendanceToDelete?.studentName}</strong>? El aprendiz será marcado como presente en esa fecha.
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter className="gap-2">
+                        <AlertDialogCancel className="rounded-lg font-semibold cursor-pointer">Cancelar</AlertDialogCancel>
+                        <AlertDialogAction 
+                            onClick={async () => {
+                                if (!attendanceToDelete) return;
+                                const { studentId, date } = attendanceToDelete;
+                                setAttendanceToDelete(null);
+                                
+                                const toastId = toast.loading("Eliminando novedad...");
+                                setIsSavingAtt(true);
+                                try {
+                                    const res = await saveSingleAttendanceAction(
+                                        attCourseId,
+                                        studentId,
+                                        date,
+                                        "PRESENT"
+                                    );
+                                    if (res.success) {
+                                        toast.success("Novedad eliminada (marcado Presente)", { id: toastId });
+                                        loadHistory(selectedGroup!.id);
+                                    } else {
+                                        toast.error("Error: " + res.error, { id: toastId });
+                                    }
+                                } catch (e) {
+                                    toast.error("Error de conexión", { id: toastId });
+                                } finally {
+                                    setIsSavingAtt(false);
+                                }
+                            }}
+                            className="bg-destructive hover:bg-destructive/90 text-destructive-foreground rounded-lg font-bold cursor-pointer"
+                        >
+                            Confirmar
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+
+            {/* Modal: Solicitar Baneo al Administrador */}
+            <Dialog open={banRequestDialogOpen} onOpenChange={setBanRequestDialogOpen}>
+                <DialogContent className="sm:max-w-md">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2 text-rose-600 dark:text-rose-400">
+                            <ShieldAlert className="w-5 h-5" />
+                            Solicitar Baneo al Administrador
+                        </DialogTitle>
+                        <DialogDescription>
+                            Envía un reporte formal al Administrador Global para bloquear el acceso de este aprendiz a la plataforma.
+                        </DialogDescription>
+                    </DialogHeader>
+                    {studentToBan && (
+                        <div className="space-y-4 py-2">
+                            <div className="p-3 rounded-lg bg-muted/60 border text-xs space-y-1">
+                                <p className="font-semibold text-sm">{formatName(studentToBan.name, studentToBan.profile)}</p>
+                                <p className="text-muted-foreground">{studentToBan.email}</p>
+                                {studentToBan.profile?.identificacion && (
+                                    <p className="text-muted-foreground">Doc: {studentToBan.profile.identificacion}</p>
+                                )}
+                            </div>
+
+                            <div className="space-y-2">
+                                <Label htmlFor="ban-reason-gm" className="text-xs font-semibold">
+                                    Motivo o justificación de la solicitud <span className="text-destructive">*</span>
+                                </Label>
+                                <Input
+                                    id="ban-reason-gm"
+                                    placeholder="Ej: Reincidencia en faltas graves, suplantación, conducta indebida..."
+                                    value={banReasonText}
+                                    onChange={(e) => setBanReasonText(e.target.value)}
+                                    className="text-sm"
+                                />
+                            </div>
+                        </div>
+                    )}
+                    <DialogFooter className="gap-2 sm:gap-0">
+                        <Button variant="outline" onClick={() => setBanRequestDialogOpen(false)} disabled={isSendingBanReq}>
+                            Cancelar
+                        </Button>
+                        <Button 
+                            className="bg-rose-600 hover:bg-rose-700 text-white font-bold" 
+                            onClick={handleSendGroupBanRequest}
+                            disabled={isSendingBanReq || !banReasonText.trim()}
+                        >
+                            {isSendingBanReq ? "Enviando..." : "Enviar Solicitud"}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* Modal de Ayuda del Panel de Instructor */}
+            <TeacherHelpModal
+                open={isHelpModalOpen}
+                onOpenChange={setIsHelpModalOpen}
+                initialTab={activeTab as any}
+            />
+        </div>
+    );
+}
